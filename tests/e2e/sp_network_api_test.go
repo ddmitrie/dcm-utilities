@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -31,6 +32,7 @@ var (
 	networkAgentBaseURL string
 	networkSPEnabled    bool
 	networkSPReady      bool
+	networkSPOnce       sync.Once
 )
 
 type networkAgentProvider struct {
@@ -795,24 +797,26 @@ func assertEmbeddedAgentHealth() {
 // initNetworkSP verifies the embedded Network SP when explicitly enabled via
 // DCM_NETWORK_SP_ENABLED=true, or when the environment-agent embeds network.
 func initNetworkSP() {
-	initEnvironmentAgent()
+	networkSPOnce.Do(func() {
+		initEnvironmentAgent()
 
-	networkAgentBaseURL = strings.TrimRight(os.Getenv("DCM_AGENT_URL"), "/")
-	if networkAgentBaseURL == "" {
-		networkAgentBaseURL = defaultAgentURL
-	}
+		networkAgentBaseURL = strings.TrimRight(os.Getenv("DCM_AGENT_URL"), "/")
+		if networkAgentBaseURL == "" {
+			networkAgentBaseURL = defaultAgentURL
+		}
 
-	explicit := os.Getenv(networkSPEnabledEnv) == "true"
-	networkSPEnabled = explicit || agentEmbeds("network")
-	if !networkSPEnabled {
-		GinkgoWriter.Printf("Network SP disabled (%s=true or agent embedding network) — Network SP tests will be skipped\n", networkSPEnabledEnv)
-		return
-	}
+		explicit := os.Getenv(networkSPEnabledEnv) == "true"
+		networkSPEnabled = explicit || agentEmbeds("network")
+		if !networkSPEnabled {
+			GinkgoWriter.Printf("Network SP disabled (%s=true or agent embedding network) — Network SP tests will be skipped\n", networkSPEnabledEnv)
+			return
+		}
 
-	waitForNetworkProvider(30 * time.Second)
-	networkSPReady = true
-	GinkgoWriter.Printf("Network SP ready through agent at %s (explicit=%v embedded=%v)\n",
-		networkAgentBaseURL, explicit, agentEmbeds("network"))
+		waitForNetworkProvider(30 * time.Second)
+		networkSPReady = true
+		GinkgoWriter.Printf("Network SP ready through agent at %s (explicit=%v embedded=%v)\n",
+			networkAgentBaseURL, explicit, agentEmbeds("network"))
+	})
 }
 
 func waitForNetworkProvider(timeout time.Duration) {

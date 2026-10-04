@@ -17,7 +17,7 @@ import (
 
 var _ = Describe("KubeVirt Service Provider API", Label("sp", "kubevirt"), func() {
 	BeforeEach(func() {
-		requireKubevirtSP()
+		requireStandaloneKubevirtSP()
 	})
 
 	Context("Health endpoint", func() {

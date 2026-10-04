@@ -13,7 +13,7 @@ import (
 var _ = Describe("ACM Cluster SP API", Label("sp", "acm-cluster"), func() {
 
 	BeforeEach(func() {
-		requireAcmClusterSP()
+		requireStandaloneAcmClusterSP()
 	})
 
 	Context("registration", func() {
@@ -56,7 +56,7 @@ var _ = Describe("ACM Cluster SP API", Label("sp", "acm-cluster"), func() {
 		var healthResp map[string]interface{}
 
 		BeforeAll(func() {
-			requireAcmClusterSP()
+			requireStandaloneAcmClusterSP()
 			resp, err := doAcmClusterSPRequest(http.MethodGet, "/clusters/health", "")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(resp.StatusCode).To(Equal(http.StatusOK))
@@ -175,7 +175,7 @@ var _ = Describe("ACM Cluster SP API", Label("sp", "acm-cluster"), func() {
 		var hypershiftAvailable bool
 
 		BeforeAll(func() {
-			requireAcmClusterSP()
+			requireStandaloneAcmClusterSP()
 			requireKubectl()
 
 			_, err := runKubectl("get", "crd", "hostedclusters.hypershift.openshift.io")

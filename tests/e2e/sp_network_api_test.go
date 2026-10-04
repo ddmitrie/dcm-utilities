@@ -81,8 +81,14 @@ var _ = Describe("Network SP API", Label("sp", "network"), func() {
 
 			spec, ok := serviceType["spec"].(map[string]interface{})
 			Expect(ok).To(BeTrue(), "network service type must include a schema object")
+			// Control-plane currently advertises the network shape with ports and
+			// endpoints. routing_level is used on catalog fields for inference
+			// but is not always present on the service-type schema object.
 			Expect(spec).To(HaveKey("ports"))
 			Expect(spec).To(HaveKey("endpoints"))
+			if _, hasRouting := spec["routing_level"]; hasRouting {
+				Expect(spec["routing_level"]).NotTo(BeNil())
+			}
 		})
 	})
 
@@ -786,23 +792,27 @@ func assertEmbeddedAgentHealth() {
 	Expect(body).To(HaveKeyWithValue("path", "health"))
 }
 
-// initNetworkSP verifies the embedded Network SP when it is explicitly enabled.
-// Otherwise, Network specs are skipped without probing an optional agent deployment.
+// initNetworkSP verifies the embedded Network SP when explicitly enabled via
+// DCM_NETWORK_SP_ENABLED=true, or when the environment-agent embeds network.
 func initNetworkSP() {
-	networkSPEnabled = os.Getenv(networkSPEnabledEnv) == "true"
-	if !networkSPEnabled {
-		GinkgoWriter.Printf("Network SP disabled (%s=true to enable) — Network SP tests will be skipped\n", networkSPEnabledEnv)
-		return
-	}
+	initEnvironmentAgent()
 
 	networkAgentBaseURL = strings.TrimRight(os.Getenv("DCM_AGENT_URL"), "/")
 	if networkAgentBaseURL == "" {
 		networkAgentBaseURL = defaultAgentURL
 	}
 
+	explicit := os.Getenv(networkSPEnabledEnv) == "true"
+	networkSPEnabled = explicit || agentEmbeds("network")
+	if !networkSPEnabled {
+		GinkgoWriter.Printf("Network SP disabled (%s=true or agent embedding network) — Network SP tests will be skipped\n", networkSPEnabledEnv)
+		return
+	}
+
 	waitForNetworkProvider(30 * time.Second)
 	networkSPReady = true
-	GinkgoWriter.Printf("Network SP ready through agent at %s\n", networkAgentBaseURL)
+	GinkgoWriter.Printf("Network SP ready through agent at %s (explicit=%v embedded=%v)\n",
+		networkAgentBaseURL, explicit, agentEmbeds("network"))
 }
 
 func waitForNetworkProvider(timeout time.Duration) {
@@ -814,7 +824,7 @@ func waitForNetworkProvider(timeout time.Duration) {
 
 func requireNetworkSP() {
 	if !networkSPEnabled {
-		Skip(fmt.Sprintf("Network SP disabled (set %s=true after deploying the environment-agent profile with AGENT_EMBEDDED_SPS=network)", networkSPEnabledEnv))
+		Skip(fmt.Sprintf("Network SP disabled (set %s=true, or deploy --with-environment-agent embedding network)", networkSPEnabledEnv))
 	}
 	if !networkSPReady {
 		Fail("Network SP is enabled but unavailable")

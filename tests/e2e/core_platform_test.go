@@ -105,8 +105,8 @@ var _ = Describe("Core Platform", Label("core", "platform"), func() {
 						"fields": [
 							{"path": "metadata.name", "display_name": "Container Name", "editable": true, "default": %q},
 							{"path": "image.reference", "display_name": "Image", "editable": true, "default": "docker.io/library/nginx:alpine"},
-							{"path": "resources.cpu.min", "editable": false, "default": 1},
-							{"path": "resources.cpu.max", "editable": false, "default": 1},
+							{"path": "resources.cpu.min", "editable": false, "default": "1"},
+							{"path": "resources.cpu.max", "editable": false, "default": "1"},
 							{"path": "resources.memory.min", "editable": false, "default": "128MB"},
 							{"path": "resources.memory.max", "editable": false, "default": "256MB"}
 						]

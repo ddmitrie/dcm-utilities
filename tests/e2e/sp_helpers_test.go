@@ -74,33 +74,38 @@ func requireContainerSP() {
 	}
 }
 
-// requireStandaloneContainerSP skips unless the direct container SP HTTP API
-// is reachable (not satisfied by environment-agent alone).
+// requireStandaloneContainerSP is kept for existing specs. It now requires
+// container capability (standalone port or agent-embedded), not the SP port.
 func requireStandaloneContainerSP() {
-	initContainerSP()
-	if !containerSPReady {
-		Skip("Standalone container SP not available (deploy with --k8s-container-service-provider and publish port 8082)")
-	}
+	requireContainerSP()
 }
 
-// doContainerSPRequest sends a request to the container SP's direct API.
+// doContainerSPRequest sends a request to the container SP HTTP API when a
+// standalone SP is up, otherwise via the control plane / environment-agent.
 func doContainerSPRequest(method, path string, body string) (*http.Response, error) {
-	url := containerSPBaseURL + path
+	initContainerSP()
+	if containerSPReady {
+		url := containerSPBaseURL + path
 
-	var reqBody io.Reader
-	if body != "" {
-		reqBody = strings.NewReader(body)
-	}
+		var reqBody io.Reader
+		if body != "" {
+			reqBody = strings.NewReader(body)
+		}
 
-	req, err := http.NewRequest(method, url, reqBody)
-	if err != nil {
-		return nil, err
-	}
-	if body != "" {
-		req.Header.Set("Content-Type", "application/json")
-	}
+		req, err := http.NewRequest(method, url, reqBody)
+		if err != nil {
+			return nil, err
+		}
+		if body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
 
-	return unauthenticatedClient.Do(req)
+		return unauthenticatedClient.Do(req)
+	}
+	if agentEmbeds("container") {
+		return doEmbeddedContainerSPRequest(method, path, body)
+	}
+	return nil, fmt.Errorf("container SP not available")
 }
 
 // expectRFC9457Problem asserts an RFC 9457 problem+json response (FLPATH-4720/4721)

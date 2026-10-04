@@ -23,7 +23,7 @@ var _ = Describe("KubeVirt SP Status Monitoring", Label("sp", "kubevirt", "nats"
 	)
 
 	BeforeEach(func() {
-		requireKubevirtSP()
+		requireStandaloneKubevirtSP()
 		requireNATS()
 
 		natsURL := os.Getenv("DCM_NATS_URL")

@@ -69,7 +69,7 @@ Service provider flags (forwarded to deploy-dcm.sh):
 
 Environment variables:
   DCM_AGENT_URL            Environment-agent API URL (default: http://localhost:8081/api/v1alpha1)
-  DCM_EMBEDDED_SPS         Comma-separated embedded SPs (hints Ginkgo capability detection)
+  DCM_EMBEDDED_SPS         Optional hint list of embedded SPs; a live agent /providers list is always merged in
   DCM_NETWORK_SP_ENABLED   Require the embedded Network SP (default: false; auto true when network is embedded)
   DCM_CONTAINER_SP_URL     Container SP direct URL (default: http://localhost:8082/api/v1alpha1)
   DCM_STORAGE_SP_URL       Storage SP direct URL (default: http://localhost:8089/api/v1alpha1)
@@ -221,6 +221,60 @@ agent_list_contains() {
         *,"${needle}",*) return 0 ;;
         *) return 1 ;;
     esac
+}
+
+# Merge comma-separated SP tokens (lowercase, de-duplicated, first-seen order).
+merge_embedded_sps() {
+    python3 -c '
+import sys
+seen = []
+for raw in ",".join(sys.argv[1:]).split(","):
+    tok = raw.strip().lower()
+    if tok and tok not in seen:
+        seen.append(tok)
+print(",".join(seen))
+' "${1:-}" "${2:-}"
+}
+
+# Ready service_type values from a live environment-agent /providers list.
+fetch_ready_embedded_sps() {
+    local url="$1"
+    curl -sf --connect-timeout 2 --max-time 5 "${url}/providers" 2>/dev/null \
+        | python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(0)
+out = []
+for p in data.get("results") or []:
+    st = (p.get("service_type") or "").strip().lower()
+    status = (p.get("status") or "").lower()
+    if st and status == "ready" and st not in out:
+        out.append(st)
+print(",".join(out))
+' 2>/dev/null || true
+}
+
+# Detect a running agent and union its Ready providers into AGENT_EMBEDDED_SPS
+# even when DCM_EMBEDDED_SPS / --agent-embedded-sps / ENABLE_* were omitted
+# or only listed a subset (Jenkins often passes network,storage alone).
+sync_environment_agent_from_live() {
+    export DCM_AGENT_URL="${DCM_AGENT_URL:-http://localhost:${AGENT_PORT}/api/v1alpha1}"
+    if ! curl -sf --connect-timeout 2 --max-time 5 "${DCM_AGENT_URL}/health" >/dev/null 2>&1; then
+        return 0
+    fi
+    if [[ "${WITH_ENVIRONMENT_AGENT}" != "true" ]]; then
+        WITH_ENVIRONMENT_AGENT=true
+        info "Detected live environment agent at ${DCM_AGENT_URL}"
+    fi
+    local live
+    live="$(fetch_ready_embedded_sps "${DCM_AGENT_URL}")"
+    if [[ -z "${live}" ]]; then
+        return 0
+    fi
+    info "Live agent Ready providers: ${live}"
+    AGENT_EMBEDDED_SPS="$(merge_embedded_sps "${AGENT_EMBEDDED_SPS}" "${live}")"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -591,31 +645,9 @@ if [[ -n "${GATEWAY_URL}" ]]; then
     info "DCM_GATEWAY_URL=${GATEWAY_URL}"
 fi
 
-# Environment-agent exports (explicit flags, or auto-detect a live agent when
-# --skip-deploy is used against an already-running stack).
-export DCM_AGENT_URL="${DCM_AGENT_URL:-http://localhost:${AGENT_PORT}/api/v1alpha1}"
-if [[ "${WITH_ENVIRONMENT_AGENT}" != "true" ]] && [[ "${SKIP_DEPLOY}" == "true" ]]; then
-    if curl -sf --connect-timeout 2 --max-time 5 "${DCM_AGENT_URL}/health" >/dev/null 2>&1; then
-        WITH_ENVIRONMENT_AGENT=true
-        info "Detected live environment agent at ${DCM_AGENT_URL}"
-        if [[ -z "${AGENT_EMBEDDED_SPS}" ]]; then
-            # Best-effort: infer Ready service types from /providers.
-            AGENT_EMBEDDED_SPS="$(curl -sf --connect-timeout 2 --max-time 5 "${DCM_AGENT_URL}/providers" 2>/dev/null \
-                | python3 -c 'import json,sys
-try:
-  d=json.load(sys.stdin)
-except Exception:
-  raise SystemExit(0)
-out=[]
-for p in d.get("results") or []:
-  st=(p.get("service_type") or "").strip()
-  status=(p.get("status") or "").lower()
-  if st and status=="ready":
-    out.append(st)
-print(",".join(out))' 2>/dev/null || true)"
-        fi
-    fi
-fi
+# Probe a live agent after the stack is up so Ready /providers types are known
+# even without DCM_EMBEDDED_SPS, --agent-embedded-sps, or ENABLE_* toggles.
+sync_environment_agent_from_live
 if [[ "${WITH_ENVIRONMENT_AGENT}" == "true" ]]; then
     export DCM_EMBEDDED_SPS="${AGENT_EMBEDDED_SPS}"
     info "DCM_AGENT_URL=${DCM_AGENT_URL}"
@@ -665,6 +697,7 @@ if [[ "${WITH_ENVIRONMENT_AGENT}" == "true" ]] && agent_list_contains vm; then
         export KUBERNETES_NAMESPACE="${KUBEVIRT_VM_NS_ARG:-${KUBEVIRT_VM_NAMESPACE:-default}}"
     fi
     export KUBEVIRT_VM_NAMESPACE="${KUBEVIRT_VM_NAMESPACE:-${KUBERNETES_NAMESPACE}}"
+    info "KUBERNETES_NAMESPACE=${KUBERNETES_NAMESPACE} (agent-embedded vm)"
 fi
 
 run_ginkgo_suite() {

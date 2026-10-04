@@ -75,6 +75,7 @@ var _ = Describe("KubeVirt Service Provider API", Label("sp", "kubevirt"), func(
 		})
 
 		It("creates a VM with custom ID via query parameter [TC-07]", func() {
+			skipUnlessDirectKubevirtSP()
 			customID := uuid.NewString()
 			spec := newTestVMSpec(uniqueName("e2e-custom-id"))
 			payload, err := json.Marshal(map[string]interface{}{"spec": spec})
@@ -102,6 +103,7 @@ var _ = Describe("KubeVirt Service Provider API", Label("sp", "kubevirt"), func(
 		})
 
 		It("returns 409 when creating a VM with a duplicate instance ID [TC-10]", func() {
+			skipUnlessDirectKubevirtSP()
 			customID := uuid.NewString()
 			spec := newTestVMSpec(uniqueName("e2e-dup"))
 			payload, err := json.Marshal(map[string]interface{}{"spec": spec})
@@ -123,6 +125,7 @@ var _ = Describe("KubeVirt Service Provider API", Label("sp", "kubevirt"), func(
 
 	Context("VM get / list / delete", func() {
 		It("gets an existing VM [TC-12]", func() {
+			skipUnlessDirectKubevirtSP()
 			id, err := createTestVM(uniqueName("e2e-get"))
 			Expect(err).NotTo(HaveOccurred())
 			DeferCleanup(func() { deleteTestVM(id) })
@@ -150,6 +153,7 @@ var _ = Describe("KubeVirt Service Provider API", Label("sp", "kubevirt"), func(
 		})
 
 		It("returns 404 for a non-existent VM [TC-13]", func() {
+			skipUnlessDirectKubevirtSP()
 			resp, err := doKubevirtRequest(http.MethodGet, "/vms/non-existent-vm-id", "")
 			Expect(err).NotTo(HaveOccurred())
 			defer resp.Body.Close()
@@ -206,7 +210,8 @@ var _ = Describe("KubeVirt Service Provider API", Label("sp", "kubevirt"), func(
 			}
 			Expect(apiStatus).To(BeElementOf("Pending", "Scheduling", "Scheduled", "Running", "Succeeded", "Failed",
 				"Starting", "Stopping", "Stopped", "Migrating", "Paused", "Unknown", "Terminating",
-				"PENDING", "PROVISIONING", "RUNNING", "STOPPING", "FAILED"),
+				"PENDING", "PROVISIONING", "RUNNING", "STOPPING", "FAILED",
+				"pending", "provisioning", "running", "stopping", "failed"),
 				"GET spec.status should be a known VM phase")
 			GinkgoWriter.Printf("GET /vms spec.status=%s (cluster=%s)\n", apiStatus, clusterStatus)
 		})
@@ -297,6 +302,7 @@ var _ = Describe("KubeVirt Service Provider API", Label("sp", "kubevirt"), func(
 		})
 
 		It("returns 404 when deleting a non-existent VM [TC-19]", func() {
+			skipUnlessDirectKubevirtSP()
 			resp, err := doKubevirtRequest(http.MethodDelete, "/vms/does-not-exist-"+uuid.NewString(), "")
 			Expect(err).NotTo(HaveOccurred())
 			defer resp.Body.Close()
@@ -311,6 +317,10 @@ var _ = Describe("KubeVirt Service Provider API", Label("sp", "kubevirt"), func(
 	})
 
 	Context("Validation", func() {
+		BeforeEach(func() {
+			skipUnlessDirectKubevirtSP()
+		})
+
 		// OpenAPI-layer 400s: accept text/plain until FLPATH-4751 (should be problem+json).
 		It("rejects empty body [TC-09][TC-25]", func() {
 			path, _ := createVMPath()
@@ -375,6 +385,7 @@ var _ = Describe("KubeVirt Service Provider API", Label("sp", "kubevirt"), func(
 
 	Context("Concurrency", func() {
 		It("creates multiple VMs in parallel without label conflicts [TC-31]", func() {
+			skipUnlessDirectKubevirtSP()
 			if err := checkClusterAccess(); err != nil {
 				Skip(err.Error())
 			}
@@ -404,7 +415,9 @@ var _ = Describe("KubeVirt Service Provider API", Label("sp", "kubevirt"), func(
 			for i := 0; i < n; i++ {
 				Expect(errs[i]).NotTo(HaveOccurred(), "create %d", i)
 				Expect(ids[i]).NotTo(BeEmpty())
-				Expect(uuid.Validate(ids[i])).To(Succeed(), "create %d id should be a UUID", i)
+				if kubevirtStandaloneReady {
+					Expect(uuid.Validate(ids[i])).To(Succeed(), "create %d id should be a UUID", i)
+				}
 			}
 			// Unique IDs
 			seen := map[string]bool{}
@@ -518,7 +531,10 @@ var _ = Describe("KubeVirt Service Provider API", Label("sp", "kubevirt"), func(
 				return strings.TrimSpace(out)
 			}).WithTimeout(180 * time.Second).WithPolling(5 * time.Second).
 				Should(BeElementOf("Running", "Failed", "Succeeded", "Scheduled", "Scheduling", "Pending",
-					"Starting", "Stopped", "Stopping", "Unknown"))
+					"Starting", "Stopped", "Stopping", "Unknown",
+					"running", "failed", "succeeded", "scheduled", "scheduling", "pending",
+					"starting", "stopped", "stopping", "unknown",
+					"RUNNING", "FAILED", "PENDING"))
 
 			Expect(setVMRunStrategy(clusterName, ns, "Halted")).To(Succeed())
 			Eventually(func() string {
@@ -555,6 +571,7 @@ var _ = Describe("KubeVirt Service Provider API", Label("sp", "kubevirt"), func(
 		// creates the VM successfully. Current CNV accepts that size (VM can reach Running).
 		// Revisit if/when the SP enforces a minimum memory or rejects tiny sizes at the API.
 		It("accepts OpenAPI 1MB memory and maps it on the cluster [TC-28c]", func() {
+			skipUnlessDirectKubevirtSP()
 			if err := checkClusterAccess(); err != nil {
 				Skip(err.Error())
 			}

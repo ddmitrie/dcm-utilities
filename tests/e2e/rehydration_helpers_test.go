@@ -419,7 +419,7 @@ func waitForInstanceRunning(resourceID string, timeout time.Duration) {
 		var body map[string]interface{}
 		decodeJSON(resp, &body)
 		s, _ := body["status"].(string)
-		if s == "RUNNING" || s == "PENDING" {
+		if s == instanceStatusRunning || s == instanceStatusPending {
 			return nil
 		}
 		return fmt.Errorf("instance %s has unexpected status %q", resourceID, s)

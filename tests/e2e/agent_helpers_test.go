@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 )
@@ -56,6 +57,7 @@ func initEnvironmentAgent() {
 			return
 		}
 		agentHealthy = true
+		embeddedAgentSeenAt = time.Now()
 		GinkgoWriter.Printf("Environment agent healthy at %s\n", agentBaseURL)
 
 		provResp, err := unauthenticatedClient.Get(agentBaseURL + "/providers")

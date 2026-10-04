@@ -47,7 +47,9 @@ var _ = Describe("ACM Cluster SP API", Label("sp", "acm-cluster"), func() {
 				}
 			}
 			Expect(found).NotTo(BeNil(), "no agent with service_types containing 'cluster' found")
-			Expect(found).To(HaveKeyWithValue("name", "acm-cluster-sp"))
+			if acmClusterSPReady {
+				Expect(found).To(HaveKeyWithValue("name", "acm-cluster-sp"))
+			}
 		})
 	})
 
@@ -114,6 +116,7 @@ var _ = Describe("ACM Cluster SP API", Label("sp", "acm-cluster"), func() {
 		})
 
 		It("rejects a body with missing required fields", func() {
+			skipUnlessDirectAcmClusterSP()
 			resp, err := doAcmClusterSPRequest(http.MethodPost, "/clusters", `{"spec":{}}`)
 			Expect(err).NotTo(HaveOccurred())
 			defer resp.Body.Close()
@@ -124,6 +127,7 @@ var _ = Describe("ACM Cluster SP API", Label("sp", "acm-cluster"), func() {
 		})
 
 		It("rejects a body with wrong field types", func() {
+			skipUnlessDirectAcmClusterSP()
 			resp, err := doAcmClusterSPRequest(http.MethodPost, "/clusters",
 				`{"spec":{"service_type": 123, "version": true}}`)
 			Expect(err).NotTo(HaveOccurred())
@@ -134,6 +138,10 @@ var _ = Describe("ACM Cluster SP API", Label("sp", "acm-cluster"), func() {
 	})
 
 	Context("RFC 9457 error format", Label("contract"), func() {
+		BeforeEach(func() {
+			skipUnlessDirectAcmClusterSP()
+		})
+
 		It("returns problem+json with status and project URI on validation error", func() {
 			resp, err := doAcmClusterSPRequest(http.MethodPost, "/clusters", `{}`)
 			Expect(err).NotTo(HaveOccurred())

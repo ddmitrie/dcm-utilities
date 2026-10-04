@@ -82,12 +82,10 @@ func requireKubevirtSP() {
 	}
 }
 
-// requireStandaloneKubevirtSP skips unless the direct KubeVirt SP HTTP API is up.
+// requireStandaloneKubevirtSP is kept for existing specs. It now requires
+// KubeVirt capability (standalone port or agent-embedded vm).
 func requireStandaloneKubevirtSP() {
-	initKubevirtSP()
-	if !kubevirtStandaloneReady {
-		Skip("Standalone KubeVirt SP not available (deploy with --kubevirt-service-provider; publish a port that does not clash with the agent)")
-	}
+	requireKubevirtSP()
 }
 
 // requireNATS skips the test if NATS is not reachable at DCM_NATS_URL.
@@ -104,9 +102,17 @@ func requireNATS() {
 	nc.Close()
 }
 
-// doKubevirtRequest performs HTTP request against the KubeVirt SP
+// doKubevirtRequest talks to the standalone KubeVirt SP when that HTTP API is
+// up; otherwise it uses the control plane / environment-agent for embedded vm.
 func doKubevirtRequest(method, path, payload string) (*http.Response, error) {
-	return doRequestToURL(kubevirtSPURL+path, method, payload)
+	initKubevirtSP()
+	if kubevirtStandaloneReady {
+		return doRequestToURL(kubevirtSPURL+path, method, payload)
+	}
+	if agentEmbeds("vm") {
+		return doEmbeddedKubevirtRequest(method, path, payload)
+	}
+	return nil, fmt.Errorf("kubevirt SP not available")
 }
 
 // createVMPath returns POST /vms?id=<uuid>. The current kubevirt SP panics when
@@ -285,6 +291,10 @@ func kubevirtNamespace() string {
 	}
 	if ns := os.Getenv("KUBEVIRT_NAMESPACE"); ns != "" {
 		return ns
+	}
+	initEnvironmentAgent()
+	if agentEmbeds("vm") {
+		return "default"
 	}
 	return "vms"
 }

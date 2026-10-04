@@ -28,35 +28,38 @@ const (
 var (
 	containerSPBaseURL string
 	containerSPReady   bool
+	containerSPOnce    sync.Once
 	natsURL            string
 )
 
 func initContainerSP() {
-	containerSPBaseURL = os.Getenv("DCM_CONTAINER_SP_URL")
-	if containerSPBaseURL == "" {
-		containerSPBaseURL = defaultContainerSPURL
-	}
-	containerSPBaseURL = strings.TrimRight(containerSPBaseURL, "/")
+	containerSPOnce.Do(func() {
+		containerSPBaseURL = os.Getenv("DCM_CONTAINER_SP_URL")
+		if containerSPBaseURL == "" {
+			containerSPBaseURL = defaultContainerSPURL
+		}
+		containerSPBaseURL = strings.TrimRight(containerSPBaseURL, "/")
 
-	natsURL = os.Getenv("DCM_NATS_URL")
-	if natsURL == "" {
-		natsURL = defaultNATSURL
-	}
+		natsURL = os.Getenv("DCM_NATS_URL")
+		if natsURL == "" {
+			natsURL = defaultNATSURL
+		}
 
-	initEnvironmentAgent()
+		initEnvironmentAgent()
 
-	resp, err := unauthenticatedClient.Get(containerSPBaseURL + "/containers/health")
-	if err != nil {
-		GinkgoWriter.Printf("Standalone container SP not reachable at %s: %v\n", containerSPBaseURL, err)
-		return
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		GinkgoWriter.Printf("Standalone container SP health returned %d at %s\n", resp.StatusCode, containerSPBaseURL)
-		return
-	}
-	containerSPReady = true
-	GinkgoWriter.Printf("Standalone container SP ready at %s\n", containerSPBaseURL)
+		resp, err := unauthenticatedClient.Get(containerSPBaseURL + "/containers/health")
+		if err != nil {
+			GinkgoWriter.Printf("Standalone container SP not reachable at %s: %v\n", containerSPBaseURL, err)
+			return
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			GinkgoWriter.Printf("Standalone container SP health returned %d at %s\n", resp.StatusCode, containerSPBaseURL)
+			return
+		}
+		containerSPReady = true
+		GinkgoWriter.Printf("Standalone container SP ready at %s\n", containerSPBaseURL)
+	})
 }
 
 // containerCapabilityAvailable is true when a standalone container SP is up

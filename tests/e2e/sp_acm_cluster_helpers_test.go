@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 
 	. "github.com/onsi/ginkgo/v2"
 )
@@ -17,29 +18,32 @@ const defaultAcmClusterSPURL = "http://localhost:8083/api/v1alpha1"
 var (
 	acmClusterSPBaseURL string
 	acmClusterSPReady   bool
+	acmClusterSPOnce    sync.Once
 )
 
 func initAcmClusterSP() {
-	acmClusterSPBaseURL = os.Getenv("DCM_ACM_CLUSTER_SP_URL")
-	if acmClusterSPBaseURL == "" {
-		acmClusterSPBaseURL = defaultAcmClusterSPURL
-	}
-	acmClusterSPBaseURL = strings.TrimRight(acmClusterSPBaseURL, "/")
+	acmClusterSPOnce.Do(func() {
+		acmClusterSPBaseURL = os.Getenv("DCM_ACM_CLUSTER_SP_URL")
+		if acmClusterSPBaseURL == "" {
+			acmClusterSPBaseURL = defaultAcmClusterSPURL
+		}
+		acmClusterSPBaseURL = strings.TrimRight(acmClusterSPBaseURL, "/")
 
-	initEnvironmentAgent()
+		initEnvironmentAgent()
 
-	resp, err := unauthenticatedClient.Get(acmClusterSPBaseURL + "/clusters/health")
-	if err != nil {
-		GinkgoWriter.Printf("Standalone ACM Cluster SP not reachable at %s: %v\n", acmClusterSPBaseURL, err)
-		return
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		GinkgoWriter.Printf("Standalone ACM Cluster SP health returned %d at %s\n", resp.StatusCode, acmClusterSPBaseURL)
-		return
-	}
-	acmClusterSPReady = true
-	GinkgoWriter.Printf("Standalone ACM Cluster SP ready at %s\n", acmClusterSPBaseURL)
+		resp, err := unauthenticatedClient.Get(acmClusterSPBaseURL + "/clusters/health")
+		if err != nil {
+			GinkgoWriter.Printf("Standalone ACM Cluster SP not reachable at %s: %v\n", acmClusterSPBaseURL, err)
+			return
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			GinkgoWriter.Printf("Standalone ACM Cluster SP health returned %d at %s\n", resp.StatusCode, acmClusterSPBaseURL)
+			return
+		}
+		acmClusterSPReady = true
+		GinkgoWriter.Printf("Standalone ACM Cluster SP ready at %s\n", acmClusterSPBaseURL)
+	})
 }
 
 func acmClusterCapabilityAvailable() bool {

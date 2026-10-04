@@ -200,8 +200,10 @@ make help
 | `DCM_GATEWAY_URL` | `http://localhost:8080/api/v1alpha1` | Control plane API base URL |
 | `DCM_CONTAINER_SP_URL` | `http://localhost:8082/api/v1alpha1` | Container SP direct URL (requires published port) |
 | `DCM_STORAGE_SP_URL` | `http://localhost:8089/api/v1alpha1` | Storage SP direct URL (requires published port) |
-| `DCM_AGENT_URL` | `http://localhost:8081/api/v1alpha1` | Environment-agent API (embedded network via `AGENT_EMBEDDED_SPS=network`) |
-| `DCM_NETWORK_SP_ENABLED` | `false` | Require the embedded Network SP; when `false`, Network specs are skipped |
+| `DCM_AGENT_URL` | `http://localhost:8081/api/v1alpha1` | Environment-agent API (`/health`, `/providers`) |
+| `DCM_EMBEDDED_SPS` | (none) | Hint list of embedded SPs for capability detection |
+| `DCM_NETWORK_SP_ENABLED` | `false` | Force Network SP specs; also auto-enabled when the agent embeds `network` |
+| `DCM_KUBEVIRT_SP_URL` | (none) | Standalone KubeVirt SP URL (do not point at the agent on `:8081`) |
 | `DCM_ACM_CLUSTER_SP_URL` | `http://localhost:8083/api/v1alpha1` | ACM Cluster SP direct URL (requires published port) |
 | `DCM_NATS_URL` | `nats://localhost:4222` | NATS server URL for status event tests |
 | `DCM_CLI_PATH` | (auto-resolved) | Path to `dcm` CLI binary |
@@ -216,12 +218,11 @@ make help
 | `DCM_AUTH_TOKEN` | (none) | Optional static bearer token; avoids the password grant |
 | `DCM_AUTH_CA_FILE` | (none) | Optional CA bundle for the OIDC issuer |
 
-Set `DCM_NETWORK_SP_ENABLED=true` only after starting the environment-agent
-profile with `AGENT_EMBEDDED_SPS=network` and publishing its API port. When
-enabled, Network specifications wait up to 30 seconds for a reachable agent at
-`DCM_AGENT_URL` and an embedded `network` provider with status `Ready`; they
-fail if it does not become ready. Otherwise, Network specifications skip
-immediately.
+With `--with-environment-agent`, Ginkgo treats Ready embedded providers from
+`GET ${DCM_AGENT_URL}/providers` as capabilities for control-plane tests
+(container/vm/cluster/network). Direct standalone SP HTTP suites still require
+published SP ports. Network specs also enable automatically when the agent
+embeds `network` (or when `DCM_NETWORK_SP_ENABLED=true`).
 
 The network NodePort tests select an unused port after listing Services across
 the cluster. The test identity needs permission to list Services in all
@@ -240,12 +241,15 @@ The test harness (`tests/run-e2e.sh`) supports additional flags for fine-grained
 ./tests/run-e2e.sh --gateway-url http://...    # Override control plane API URL
 ./tests/run-e2e.sh --junit-report results.xml  # Write JUnit XML report
 
-# Service provider tests
+# Service provider tests (standalone SP containers)
 ./tests/run-e2e.sh --k8s-container-service-provider --cluster-api https://api.example.com:6443
 ./tests/run-e2e.sh --k8s-storage-service-provider --kubeconfig ~/.kube/config
-# Network (embedded environment agent; requires kubectl/oc access to the target cluster)
-./tests/run-e2e.sh --skip-deploy --label-filter "sp && network"
-./tests/run-e2e.sh --skip-deploy --label-filter "sp && container"
+# Environment-agent path (embedded SPs; control-plane + agent tests)
+./tests/run-e2e.sh --with-environment-agent --agent-embedded-sps container,vm,network \
+  --kubeconfig ~/.kube/config
+./tests/run-e2e.sh --skip-deploy --with-environment-agent --agent-embedded-sps network \
+  --label-filter "sp && network"
+./tests/run-e2e.sh --skip-deploy --label-filter "core && platform"
 
 # Authentication-disabled mode (the default)
 ./tests/run-e2e.sh --skip-deploy --skip-cli --label-filter smoke

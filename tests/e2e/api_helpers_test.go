@@ -49,9 +49,13 @@ var _ = BeforeSuite(func() {
 	// Resolve CLI binary (tests skip gracefully if not found).
 	initCLI()
 
+	// Probe environment-agent first so embedded SP capability is known.
+	initEnvironmentAgent()
+
 	// Probe service providers (tests skip gracefully if not deployed).
 	initContainerSP()
 	initAcmClusterSP()
+	initKubevirtSP()
 	initNetworkSP()
 
 	// Resolve cluster CLI for tests that need kubectl/oc.

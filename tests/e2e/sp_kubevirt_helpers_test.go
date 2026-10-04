@@ -21,39 +21,72 @@ import (
 )
 
 var (
-	kubevirtSPURL     string
-	kubevirtSPOnce    sync.Once
-	kubevirtSPSkipped bool
+	kubevirtSPURL           string
+	kubevirtSPOnce          sync.Once
+	kubevirtStandaloneReady bool
 )
 
-// initKubevirtSP initializes the KubeVirt SP URL from env or defaults
+// initKubevirtSP probes the standalone KubeVirt SP HTTP API.
+// Default host port 8081 collides with environment-agent; only treat a URL as
+// the standalone SP when GET /vms/health succeeds (agent exposes /health only).
 func initKubevirtSP() {
 	kubevirtSPOnce.Do(func() {
-		kubevirtSPURL = os.Getenv("DCM_KUBEVIRT_SP_URL")
+		initEnvironmentAgent()
+
+		explicit := os.Getenv("DCM_KUBEVIRT_SP_URL")
+		kubevirtSPURL = explicit
 		if kubevirtSPURL == "" {
 			kubevirtSPURL = "http://localhost:8081/api/v1alpha1"
 		}
+		kubevirtSPURL = strings.TrimRight(kubevirtSPURL, "/")
 
-		// Health lives under /vms/health (same pattern as container/acm SPs)
+		// When the default URL is used and the agent owns :8081, skip the
+		// misleading standalone probe unless the caller set DCM_KUBEVIRT_SP_URL.
+		if explicit == "" && environmentAgentHealthy() && sameHTTPAuthority(kubevirtSPURL, agentBaseURL) {
+			GinkgoWriter.Printf("Skipping default KubeVirt SP URL %s — environment agent is using the same host port\n", kubevirtSPURL)
+			return
+		}
+
 		resp, err := unauthenticatedClient.Get(kubevirtSPURL + "/vms/health")
-		if err != nil || resp.StatusCode != http.StatusOK {
-			GinkgoWriter.Printf("KubeVirt SP not reachable at %s (tests will skip)\n", kubevirtSPURL)
-			kubevirtSPSkipped = true
+		if err != nil || resp == nil || resp.StatusCode != http.StatusOK {
+			GinkgoWriter.Printf("Standalone KubeVirt SP not reachable at %s/vms/health\n", kubevirtSPURL)
 			if resp != nil {
 				resp.Body.Close()
 			}
 			return
 		}
 		resp.Body.Close()
-		GinkgoWriter.Printf("KubeVirt SP available at: %s\n", kubevirtSPURL)
+		kubevirtStandaloneReady = true
+		GinkgoWriter.Printf("Standalone KubeVirt SP ready at %s\n", kubevirtSPURL)
 	})
 }
 
-// requireKubevirtSP skips the test if KubeVirt SP is not available
-func requireKubevirtSP() {
+func sameHTTPAuthority(a, b string) bool {
+	a = strings.TrimPrefix(strings.TrimPrefix(strings.ToLower(a), "https://"), "http://")
+	b = strings.TrimPrefix(strings.TrimPrefix(strings.ToLower(b), "https://"), "http://")
+	aHost, _, _ := strings.Cut(a, "/")
+	bHost, _, _ := strings.Cut(b, "/")
+	return aHost != "" && aHost == bHost
+}
+
+func kubevirtCapabilityAvailable() bool {
 	initKubevirtSP()
-	if kubevirtSPSkipped {
-		Skip("KubeVirt SP not available (deploy with --kubevirt-service-provider; port 8081 published via compose-kubevirt-sp.yaml)")
+	return kubevirtStandaloneReady || agentEmbeds("vm")
+}
+
+// requireKubevirtSP skips unless VM workloads can be provisioned via the
+// control plane (standalone SP or agent-embedded vm).
+func requireKubevirtSP() {
+	if !kubevirtCapabilityAvailable() {
+		Skip("KubeVirt capability not available (standalone --kubevirt-service-provider, or --with-environment-agent embedding vm)")
+	}
+}
+
+// requireStandaloneKubevirtSP skips unless the direct KubeVirt SP HTTP API is up.
+func requireStandaloneKubevirtSP() {
+	initKubevirtSP()
+	if !kubevirtStandaloneReady {
+		Skip("Standalone KubeVirt SP not available (deploy with --kubevirt-service-provider; publish a port that does not clash with the agent)")
 	}
 }
 

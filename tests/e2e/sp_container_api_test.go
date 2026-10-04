@@ -12,7 +12,7 @@ import (
 
 var _ = Describe("Container SP API", Label("sp", "container"), func() {
 	BeforeEach(func() {
-		requireContainerSP()
+		requireStandaloneContainerSP()
 	})
 
 	Context("registration", func() {
@@ -199,7 +199,7 @@ var _ = Describe("Container SP API", Label("sp", "container"), func() {
 					},
 					"image": {"reference": "docker.io/library/nginx:alpine"},
 					"resources": {
-						"cpu": {"min": 10, "max": 5},
+						"cpu": {"min": "10", "max": "5"},
 						"memory": {"min": "128MB", "max": "256MB"}
 					}
 				}

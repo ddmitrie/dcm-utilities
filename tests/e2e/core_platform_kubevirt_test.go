@@ -292,8 +292,8 @@ var _ = Describe("Core Platform - KubeVirt Provider", Label("core", "platform", 
 				status, _ := body["status"].(string)
 				GinkgoWriter.Printf("VM status: %s\n", status)
 				return status
-			}).WithTimeout(600 * time.Second).WithPolling(10 * time.Second).Should(Equal("Running"),
-				"VM should reach Running status")
+			}).WithTimeout(600 * time.Second).WithPolling(10 * time.Second).Should(Equal(instanceStatusRunning),
+				"VM should reach running status on the service type instance")
 
 			// Cluster verification: STI id is the DCM instance id used as SP VM id
 			ns := kubevirtNamespace()
@@ -316,7 +316,7 @@ var _ = Describe("Core Platform - KubeVirt Provider", Label("core", "platform", 
 
 			var body map[string]interface{}
 			decodeJSON(resp, &body)
-			Expect(body["status"]).To(Equal("Running"))
+			Expect(body["status"]).To(Equal(instanceStatusRunning))
 			Expect(body["agent_name"]).To(Equal(kubevirtProviderName))
 		})
 

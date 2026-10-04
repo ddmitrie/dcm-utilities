@@ -22,6 +22,19 @@ var runResourceIDCache = map[string]string{}
 
 const defaultGatewayURL = "http://localhost:8080/api/v1alpha1"
 
+// Control-plane ServiceTypeInstance.Status is stored lowercase after the
+// StatusConsumer normalizes CloudEvent payloads (control-plane
+// internal/sp/store/model/status.go). Standalone SP HTTP/NATS payloads may
+// still use uppercase enums (RUNNING, PENDING).
+const (
+	instanceStatusPending      = "pending"
+	instanceStatusQueued       = "queued"
+	instanceStatusProvisioning = "provisioning"
+	instanceStatusRunning      = "running"
+	instanceStatusDeleting     = "deleting"
+	instanceStatusFailed       = "failed"
+)
+
 var _ = BeforeSuite(func() {
 	gatewayBaseURL = os.Getenv("DCM_GATEWAY_URL")
 	if gatewayBaseURL == "" {

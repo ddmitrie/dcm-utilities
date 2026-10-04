@@ -27,6 +27,7 @@ When adding a new service provider, add `sp_{provider}_{concern}_test.go` (e.g. 
 - Ordered contexts need `AfterAll` cleanup; standalone tests use `BeforeEach`/`AfterEach`
 - Tests that need optional infrastructure call `requireCLI()`, `requireContainerSP()` (CP capability), `requireStandaloneContainerSP()` (direct SP HTTP), `requireKubevirtSP()` / `requireStandaloneKubevirtSP()`, `requireAcmClusterSP()` / `requireStandaloneAcmClusterSP()`, `requireKubectl()`, or `requirePodman()` to skip gracefully
 - Control-plane / catalog flows use capability helpers (standalone **or** agent-embedded). Direct `sp_*_api` suites that call `/containers`, `/vms`, `/clusters` use standalone helpers
+- Service type instance `status` from the control-plane gateway is **lowercase** (`running`, `pending`, …; see `instanceStatus*` in `api_helpers_test.go`). Standalone SP HTTP and raw NATS CloudEvent payloads may still be uppercase (`RUNNING`). Do not mix the two surfaces.
 - `BeforeSuite` in `api_helpers_test.go` is the single initialization point — add `init*()` calls there for new subsystems (`initEnvironmentAgent()` runs before SP probes)
 - Tests that modify infrastructure (e.g. stop NATS) use `Label("disruptive")` so they can be excluded from normal runs
 - Tests that require cluster access use `Label("cluster")` so they can be filtered when no cluster is available

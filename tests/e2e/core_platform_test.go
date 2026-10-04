@@ -202,7 +202,7 @@ var _ = Describe("Core Platform", Label("core", "platform"), func() {
 				decodeJSON(resp, &body)
 				s, _ := body["status"].(string)
 				return s
-			}).WithTimeout(120*time.Second).WithPolling(3*time.Second).Should(Equal("RUNNING"),
+			}).WithTimeout(120*time.Second).WithPolling(3*time.Second).Should(Equal(instanceStatusRunning),
 				"service type instance should reach RUNNING status")
 		})
 
@@ -215,7 +215,7 @@ var _ = Describe("Core Platform", Label("core", "platform"), func() {
 
 			var body map[string]interface{}
 			decodeJSON(resp, &body)
-			Expect(body["status"]).To(Equal("RUNNING"), "instance should still be RUNNING during verification")
+			Expect(body["status"]).To(Equal(instanceStatusRunning), "instance should still be RUNNING during verification")
 			Expect(body["agent_name"]).To(Equal(containerProviderName))
 		})
 	})

@@ -43,23 +43,43 @@ func initContainerSP() {
 		natsURL = defaultNATSURL
 	}
 
+	initEnvironmentAgent()
+
 	resp, err := unauthenticatedClient.Get(containerSPBaseURL + "/containers/health")
 	if err != nil {
-		GinkgoWriter.Printf("Container SP not reachable at %s: %v — SP tests will be skipped\n", containerSPBaseURL, err)
+		GinkgoWriter.Printf("Standalone container SP not reachable at %s: %v\n", containerSPBaseURL, err)
 		return
 	}
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		GinkgoWriter.Printf("Container SP health returned %d — SP tests will be skipped\n", resp.StatusCode)
+		GinkgoWriter.Printf("Standalone container SP health returned %d at %s\n", resp.StatusCode, containerSPBaseURL)
 		return
 	}
 	containerSPReady = true
-	GinkgoWriter.Printf("Container SP ready at %s\n", containerSPBaseURL)
+	GinkgoWriter.Printf("Standalone container SP ready at %s\n", containerSPBaseURL)
 }
 
+// containerCapabilityAvailable is true when a standalone container SP is up
+// or the environment-agent embeds a Ready container provider.
+func containerCapabilityAvailable() bool {
+	initContainerSP()
+	return containerSPReady || agentEmbeds("container")
+}
+
+// requireContainerSP skips unless container workloads can be provisioned via
+// the control plane (standalone SP or agent-embedded container).
 func requireContainerSP() {
+	if !containerCapabilityAvailable() {
+		Skip("Container capability not available (standalone --k8s-container-service-provider on :8082, or --with-environment-agent embedding container)")
+	}
+}
+
+// requireStandaloneContainerSP skips unless the direct container SP HTTP API
+// is reachable (not satisfied by environment-agent alone).
+func requireStandaloneContainerSP() {
+	initContainerSP()
 	if !containerSPReady {
-		Skip("Container SP not available (deploy with --k8s-container-service-provider and publish port 8082)")
+		Skip("Standalone container SP not available (deploy with --k8s-container-service-provider and publish port 8082)")
 	}
 }
 
@@ -178,7 +198,8 @@ func containerSpecWith(name, imageRef string, opts containerSpecOpts) string {
 		"metadata":     map[string]interface{}{"name": name},
 		"image":        map[string]interface{}{"reference": imageRef},
 		"resources": map[string]interface{}{
-			"cpu":    map[string]interface{}{"min": 1, "max": 1},
+			// CPU quantities are Kubernetes resource.Quantity strings (e.g. "1", "500m").
+			"cpu":    map[string]interface{}{"min": "1", "max": "1"},
 			"memory": map[string]interface{}{"min": "128MB", "max": "256MB"},
 		},
 	}

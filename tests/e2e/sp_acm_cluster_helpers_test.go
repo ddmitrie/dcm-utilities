@@ -25,23 +25,40 @@ func initAcmClusterSP() {
 	}
 	acmClusterSPBaseURL = strings.TrimRight(acmClusterSPBaseURL, "/")
 
+	initEnvironmentAgent()
+
 	resp, err := unauthenticatedClient.Get(acmClusterSPBaseURL + "/clusters/health")
 	if err != nil {
-		GinkgoWriter.Printf("ACM Cluster SP not reachable at %s: %v — ACM SP tests will be skipped\n", acmClusterSPBaseURL, err)
+		GinkgoWriter.Printf("Standalone ACM Cluster SP not reachable at %s: %v\n", acmClusterSPBaseURL, err)
 		return
 	}
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		GinkgoWriter.Printf("ACM Cluster SP health returned %d — ACM SP tests will be skipped\n", resp.StatusCode)
+		GinkgoWriter.Printf("Standalone ACM Cluster SP health returned %d at %s\n", resp.StatusCode, acmClusterSPBaseURL)
 		return
 	}
 	acmClusterSPReady = true
-	GinkgoWriter.Printf("ACM Cluster SP ready at %s\n", acmClusterSPBaseURL)
+	GinkgoWriter.Printf("Standalone ACM Cluster SP ready at %s\n", acmClusterSPBaseURL)
 }
 
+func acmClusterCapabilityAvailable() bool {
+	initAcmClusterSP()
+	return acmClusterSPReady || agentEmbeds("cluster")
+}
+
+// requireAcmClusterSP skips unless cluster workloads can be provisioned via
+// the control plane (standalone SP or agent-embedded cluster).
 func requireAcmClusterSP() {
+	if !acmClusterCapabilityAvailable() {
+		Skip("ACM cluster capability not available (standalone --acm-cluster-service-provider on :8083, or --with-environment-agent embedding cluster)")
+	}
+}
+
+// requireStandaloneAcmClusterSP skips unless the direct ACM SP HTTP API is up.
+func requireStandaloneAcmClusterSP() {
+	initAcmClusterSP()
 	if !acmClusterSPReady {
-		Skip("ACM Cluster SP not available (deploy with --acm-cluster-service-provider and publish port 8083)")
+		Skip("Standalone ACM Cluster SP not available (deploy with --acm-cluster-service-provider and publish port 8083)")
 	}
 }
 

@@ -1465,7 +1465,7 @@ var _ = Describe("Status Reader", Label("nats"), func() {
 				"consumer should apply last-write-wins — no forward-only constraint on status")
 		})
 
-		It("preserves existing status when an event has an empty status string", func() {
+		It("applies an empty status string from a status event", func() {
 			By("first setting status to a known value")
 			conn, err := nats.Connect(natsURL, nats.Timeout(5*time.Second))
 			Expect(err).NotTo(HaveOccurred())
@@ -1495,11 +1495,11 @@ var _ = Describe("Status Reader", Label("nats"), func() {
 			Eventually(func() string {
 				r, e := doRequest(http.MethodGet, "/service-type-instances/"+resourceID, "")
 				if e != nil {
-					return ""
+					return "error"
 				}
 				defer r.Body.Close()
 				if r.StatusCode != http.StatusOK {
-					return ""
+					return "error"
 				}
 				var body map[string]interface{}
 				decodeJSON(r, &body)
@@ -1528,22 +1528,24 @@ var _ = Describe("Status Reader", Label("nats"), func() {
 			Expect(err).NotTo(HaveOccurred())
 			conn.Flush()
 
-			By("verifying the existing status is consistently preserved (GORM skips zero-value fields)")
-			Consistently(func() string {
+			// StatusConsumer always UpdateStatus after ToLower/TrimSpace, and the
+			// store Select("status", "status_message") so an empty string overwrites.
+			By("verifying the API reflects the empty status")
+			Eventually(func() (string, error) {
 				r, e := doRequest(http.MethodGet, "/service-type-instances/"+resourceID, "")
 				if e != nil {
-					return ""
+					return "", e
 				}
 				defer r.Body.Close()
 				if r.StatusCode != http.StatusOK {
-					return ""
+					return "", fmt.Errorf("GET status %d", r.StatusCode)
 				}
 				var body map[string]interface{}
 				decodeJSON(r, &body)
 				s, _ := body["status"].(string)
-				return s
-			}).WithTimeout(5*time.Second).WithPolling(1*time.Second).Should(Equal(strings.ToLower(knownStatus)),
-				"empty status string should be a no-op due to GORM zero-value skip behavior")
+				return s, nil
+			}).WithTimeout(10*time.Second).WithPolling(1*time.Second).Should(Equal(""),
+				"empty status in the CloudEvent is persisted, not treated as a no-op")
 		})
 	})
 

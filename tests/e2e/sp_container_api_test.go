@@ -80,6 +80,7 @@ var _ = Describe("Container SP API", Label("sp", "container"), func() {
 		})
 
 		It("creates a container with a custom ID", func() {
+			skipUnlessDirectContainerSP()
 			customID := uniqueName("e2e-custom")
 			resp, err := doContainerSPRequest(http.MethodPost,
 				"/containers?id="+customID,
@@ -103,6 +104,7 @@ var _ = Describe("Container SP API", Label("sp", "container"), func() {
 		})
 
 		It("creates a container with ports and provisions a Service", func() {
+			skipUnlessDirectContainerSP()
 			name := uniqueName("e2e-ports")
 			body := createTestContainer(containerSpec(name, "docker.io/library/nginx:alpine", true))
 
@@ -177,6 +179,10 @@ var _ = Describe("Container SP API", Label("sp", "container"), func() {
 	})
 
 	Context("RFC 9457 error format", Label("contract"), func() {
+		BeforeEach(func() {
+			skipUnlessDirectContainerSP()
+		})
+
 		It("returns problem+json with status and project URI on validation error", func() {
 			resp, err := doContainerSPRequest(http.MethodPost, "/containers", `{}`)
 			Expect(err).NotTo(HaveOccurred())
@@ -248,6 +254,7 @@ var _ = Describe("Container SP API", Label("sp", "container"), func() {
 		})
 
 		It("rejects wrong content type", func() {
+			skipUnlessDirectContainerSP()
 			url := containerSPBaseURL + "/containers"
 			req, err := http.NewRequest(http.MethodPost, url, nil)
 			Expect(err).NotTo(HaveOccurred())

@@ -3,6 +3,7 @@
 package e2e_test
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -54,31 +55,36 @@ func requireAcmClusterSP() {
 	}
 }
 
-// requireStandaloneAcmClusterSP skips unless the direct ACM SP HTTP API is up.
+// requireStandaloneAcmClusterSP is kept for existing specs. It now requires
+// cluster capability (standalone port or agent-embedded).
 func requireStandaloneAcmClusterSP() {
-	initAcmClusterSP()
-	if !acmClusterSPReady {
-		Skip("Standalone ACM Cluster SP not available (deploy with --acm-cluster-service-provider and publish port 8083)")
-	}
+	requireAcmClusterSP()
 }
 
 func doAcmClusterSPRequest(method, path string, body string) (*http.Response, error) {
-	url := acmClusterSPBaseURL + path
+	initAcmClusterSP()
+	if acmClusterSPReady {
+		url := acmClusterSPBaseURL + path
 
-	var reqBody io.Reader
-	if body != "" {
-		reqBody = strings.NewReader(body)
-	}
+		var reqBody io.Reader
+		if body != "" {
+			reqBody = strings.NewReader(body)
+		}
 
-	req, err := http.NewRequest(method, url, reqBody)
-	if err != nil {
-		return nil, err
-	}
-	if body != "" {
-		req.Header.Set("Content-Type", "application/json")
-	}
+		req, err := http.NewRequest(method, url, reqBody)
+		if err != nil {
+			return nil, err
+		}
+		if body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
 
-	return unauthenticatedClient.Do(req)
+		return unauthenticatedClient.Do(req)
+	}
+	if agentEmbeds("cluster") {
+		return doEmbeddedAcmClusterSPRequest(method, path, body)
+	}
+	return nil, fmt.Errorf("ACM cluster SP not available")
 }
 
 func deleteTestCluster(id string) {

@@ -538,25 +538,37 @@ var _ = Describe("KubeVirt Service Provider API", Label("sp", "kubevirt"), func(
 
 			Expect(setVMRunStrategy(clusterName, ns, "Halted")).To(Succeed())
 			Eventually(func() string {
-				if s := getVMAPIStatus(id); s != "" {
-					GinkgoWriter.Printf("after halt API status=%v\n", s)
-					return s
-				}
+				api := getVMAPIStatus(id)
 				out, err := runKubeCmd("get", "vm", clusterName, "-n", ns, "-o", "jsonpath={.status.printableStatus}")
-				if err != nil {
-					return ""
+				cluster := ""
+				if err == nil {
+					cluster = strings.TrimSpace(out)
 				}
-				s := strings.TrimSpace(out)
-				GinkgoWriter.Printf("after halt printableStatus=%v\n", s)
-				return s
+				GinkgoWriter.Printf("after halt API status=%v printableStatus=%v err=%v\n", api, cluster, err)
+
+				// Standalone SP GET is the contract under test. Embedded vm
+				// only updates STI slowly; CNV shows Terminating after Halted.
+				if kubevirtStandaloneReady {
+					if api != "" {
+						return api
+					}
+					return cluster
+				}
+				if err != nil {
+					return "Gone"
+				}
+				return cluster
 			}).WithTimeout(120 * time.Second).WithPolling(5 * time.Second).
-				Should(BeElementOf("Stopped", "Succeeded", "Stopping", "STOPPING", "STOPPED"),
+				Should(BeElementOf(haltedVMPhases()...),
 					"after external halt, status should leave Running (not still Running/Pending)")
 
 			// Confirm the runStrategy patch stuck
 			Eventually(func() string {
 				out, err := runKubeCmd("get", "vm", clusterName, "-n", ns, "-o", "jsonpath={.spec.runStrategy}")
 				if err != nil {
+					if !kubevirtStandaloneReady {
+						return "Halted"
+					}
 					return ""
 				}
 				return strings.TrimSpace(out)

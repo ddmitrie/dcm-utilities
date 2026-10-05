@@ -252,3 +252,15 @@ func isPendingPhase(s string) bool {
 		return false
 	}
 }
+
+// haltedVMPhases is the post-Halted printable / SP status set. Standalone SP
+// GET uses Stopped/Stopping; agent-embedded CNV typically reports Terminating
+// (and the VM object may disappear).
+func haltedVMPhases() []interface{} {
+	phases := []interface{}{"Stopped", "Succeeded", "Stopping", "STOPPING", "STOPPED",
+		"stopped", "succeeded", "stopping"}
+	if !kubevirtStandaloneReady {
+		phases = append(phases, "Terminating", "terminating", "TERMINATING", "Gone")
+	}
+	return phases
+}

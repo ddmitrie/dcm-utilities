@@ -59,8 +59,9 @@ func requireAcmClusterSP() {
 	}
 }
 
-// requireStandaloneAcmClusterSP is kept for existing specs. It now requires
-// cluster capability (standalone port or agent-embedded).
+// requireStandaloneAcmClusterSP is an alias of requireAcmClusterSP for existing
+// specs. Use skipUnlessDirectAcmClusterSP() when the spec needs the standalone
+// :8083 OpenAPI contract.
 func requireStandaloneAcmClusterSP() {
 	requireAcmClusterSP()
 }

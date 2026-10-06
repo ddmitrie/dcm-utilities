@@ -77,8 +77,9 @@ func requireContainerSP() {
 	}
 }
 
-// requireStandaloneContainerSP is kept for existing specs. It now requires
-// container capability (standalone port or agent-embedded), not the SP port.
+// requireStandaloneContainerSP is an alias of requireContainerSP for existing
+// specs. Use skipUnlessDirectContainerSP() when the spec needs the standalone
+// :8082 OpenAPI contract.
 func requireStandaloneContainerSP() {
 	requireContainerSP()
 }

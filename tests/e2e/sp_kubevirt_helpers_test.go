@@ -82,8 +82,9 @@ func requireKubevirtSP() {
 	}
 }
 
-// requireStandaloneKubevirtSP is kept for existing specs. It now requires
-// KubeVirt capability (standalone port or agent-embedded vm).
+// requireStandaloneKubevirtSP is an alias of requireKubevirtSP for existing
+// specs. Use skipUnlessDirectKubevirtSP() when the spec needs the standalone
+// SP HTTP contract. Embedded vm still publishes dcm.vm.
 func requireStandaloneKubevirtSP() {
 	requireKubevirtSP()
 }

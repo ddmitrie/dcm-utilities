@@ -48,7 +48,10 @@ func initAcmClusterSP() {
 
 func acmClusterCapabilityAvailable() bool {
 	initAcmClusterSP()
-	return acmClusterSPReady || agentEmbeds("cluster")
+	if acmClusterSPReady {
+		return true
+	}
+	return waitForAgentEmbed("cluster", 30*time.Second)
 }
 
 // requireAcmClusterSP skips unless cluster workloads can be provisioned via
@@ -57,13 +60,6 @@ func requireAcmClusterSP() {
 	if !acmClusterCapabilityAvailable() {
 		Skip("ACM cluster capability not available (standalone --acm-cluster-service-provider on :8083, or --with-environment-agent embedding cluster)")
 	}
-}
-
-// requireStandaloneAcmClusterSP is an alias of requireAcmClusterSP for existing
-// specs. Use skipUnlessDirectAcmClusterSP() when the spec needs the standalone
-// :8083 OpenAPI contract.
-func requireStandaloneAcmClusterSP() {
-	requireAcmClusterSP()
 }
 
 func doAcmClusterSPRequest(method, path string, body string) (*http.Response, error) {

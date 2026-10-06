@@ -806,7 +806,15 @@ func initNetworkSP() {
 		}
 
 		explicit := os.Getenv(networkSPEnabledEnv) == "true"
-		networkSPEnabled = explicit || agentEmbeds("network")
+		if explicit {
+			networkSPEnabled = true
+		} else if environmentAgentHealthy() {
+			// Poll live /providers — a one-shot miss during BeforeSuite must not
+			// permanently disable the suite before network becomes Ready.
+			networkSPEnabled = waitForAgentEmbed("network", 30*time.Second)
+		} else {
+			networkSPEnabled = agentEmbeds("network")
+		}
 		if !networkSPEnabled {
 			GinkgoWriter.Printf("Network SP disabled (%s=true or agent embedding network) — Network SP tests will be skipped\n", networkSPEnabledEnv)
 			return

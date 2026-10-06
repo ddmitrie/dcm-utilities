@@ -22,11 +22,15 @@ import (
 // plane (catalog → agent). OpenAPI-specific SP contract tests still skip.
 
 var (
-	embeddedCatalogMu    sync.Mutex
-	embeddedCatalogItem  = map[string]string{} // serviceType → catalog item uid
-	embeddedCatalogPol   = map[string]string{} // serviceType → policy id
-	embeddedSTIToInst    = map[string]string{} // service-type-instance id → catalog-item-instance uid
-	embeddedAgentSeenAt  = time.Now()
+	embeddedCatalogMu       sync.Mutex
+	// embeddedCreateResolveMu serializes snapshot→POST→resolve so concurrent
+	// embedded creates cannot share the same global before/after STI diff.
+	embeddedCreateResolveMu sync.Mutex
+	embeddedCatalogItem     = map[string]string{} // serviceType → catalog item uid (created by this run)
+	embeddedCatalogPol      = map[string]string{} // serviceType → policy id (created or reused)
+	embeddedCreatedPolicies = map[string]bool{}   // policy ids this run created (not reused)
+	embeddedSTIToInst       = map[string]string{} // service-type-instance id → catalog-item-instance uid
+	embeddedAgentSeenAt     = time.Now()
 )
 
 func skipUnlessDirectContainerSP() {
@@ -95,9 +99,29 @@ func stiStatusAsSP(status string) string {
 	return strings.ToUpper(status)
 }
 
-func firstGlobalPolicyID() string {
+// policySelectsAgent reports whether rego_code selects agentName via
+// selected_agent (placement routing result).
+func policySelectsAgent(regoCode, agentName string) bool {
+	if agentName == "" || regoCode == "" {
+		return false
+	}
+	return strings.Contains(regoCode, fmt.Sprintf(`"selected_agent": "%s"`, agentName)) ||
+		strings.Contains(regoCode, fmt.Sprintf(`"selected_agent":"%s"`, agentName))
+}
+
+// findGlobalPolicySelectingAgent returns a GLOBAL policy whose rego selects
+// agentName. Non-200 list responses and GLOBAL policies for other agents are
+// ignored so embedded workloads are not mis-routed.
+func findGlobalPolicySelectingAgent(agentName string) string {
 	resp, err := doRequest(http.MethodGet, "/policies?max_page_size=100", "")
-	if err != nil {
+	if err != nil || resp == nil {
+		return ""
+	}
+	if resp.StatusCode != http.StatusOK {
+		_, _ = io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		GinkgoWriter.Printf("Warning: list policies returned %d; not reusing GLOBAL for agent %s\n",
+			resp.StatusCode, agentName)
 		return ""
 	}
 	var body map[string]interface{}
@@ -110,11 +134,57 @@ func firstGlobalPolicyID() string {
 		}
 		pt, _ := p["policy_type"].(string)
 		id, _ := p["id"].(string)
-		if strings.EqualFold(pt, "GLOBAL") && id != "" {
+		rego, _ := p["rego_code"].(string)
+		if !strings.EqualFold(pt, "GLOBAL") || id == "" {
+			continue
+		}
+		if policySelectsAgent(rego, agentName) {
 			return id
 		}
 	}
 	return ""
+}
+
+// createEmbeddedRoutingPolicy creates a GLOBAL policy that selects agentName.
+// Unique priorities avoid 409 against an existing GLOBAL that routes elsewhere.
+// Returns (id, createdByUs).
+func createEmbeddedRoutingPolicy(serviceType, agentName string) (string, bool) {
+	GinkgoHelper()
+	for attempt := 0; attempt < 8; attempt++ {
+		priority := 50
+		if attempt > 0 {
+			priority = 200 + int(time.Now().UnixNano()%7000) + attempt
+		}
+		pkg := fmt.Sprintf("e2e_embed_%s_%d", strings.ReplaceAll(serviceType, "-", "_"), time.Now().UnixNano())
+		polName := uniqueName("e2e-embed-pol-" + serviceType)
+		polPayload := fmt.Sprintf(`{
+		"display_name": %q,
+		"policy_type": "GLOBAL",
+		"priority": %d,
+		"description": "E2E embedded SP route for %s",
+		"rego_code": "package %s\n\nmain := {\"selected_agent\": \"%s\"}"
+	}`, polName, priority, agentName, pkg, agentName)
+
+		resp, err := doRequest(http.MethodPost, "/policies", polPayload)
+		Expect(err).NotTo(HaveOccurred())
+		if resp.StatusCode == http.StatusConflict {
+			_, _ = io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			if id := findGlobalPolicySelectingAgent(agentName); id != "" {
+				return id, false
+			}
+			continue
+		}
+		Expect(resp.StatusCode).To(Equal(http.StatusCreated),
+			"create routing policy for embedded %s → agent %s", serviceType, agentName)
+		var polBody map[string]interface{}
+		decodeJSON(resp, &polBody)
+		polID, _ := polBody["id"].(string)
+		Expect(polID).NotTo(BeEmpty())
+		return polID, true
+	}
+	Fail(fmt.Sprintf("could not create GLOBAL routing policy for embedded %s → agent %s", serviceType, agentName))
+	return "", false
 }
 
 func ensureEmbeddedCatalogRoute(serviceType string) (catalogItemID, agentName string) {
@@ -127,33 +197,18 @@ func ensureEmbeddedCatalogRoute(serviceType string) (catalogItemID, agentName st
 	}
 
 	agentName = discoverAgentByServiceType(serviceType, "")
-	// Control plane allows only one GLOBAL policy per priority. Reuse an
-	// existing GLOBAL route (typically local-agent) instead of 409ing.
-	polID := firstGlobalPolicyID()
+	// Reuse a GLOBAL only when its rego already selects this agent. Otherwise
+	// create a dedicated policy so we do not reuse a route aimed elsewhere.
+	polID := findGlobalPolicySelectingAgent(agentName)
+	createdPolicy := false
 	if polID == "" {
-		pkg := fmt.Sprintf("e2e_embed_%s_%d", strings.ReplaceAll(serviceType, "-", "_"), time.Now().UnixNano())
-		polName := uniqueName("e2e-embed-pol-" + serviceType)
-		polPayload := fmt.Sprintf(`{
-		"display_name": %q,
-		"policy_type": "GLOBAL",
-		"priority": 50,
-		"description": "E2E embedded SP route",
-		"rego_code": "package %s\n\nmain := {\"selected_agent\": \"%s\"}"
-	}`, polName, pkg, agentName)
-		resp, err := doRequest(http.MethodPost, "/policies", polPayload)
-		Expect(err).NotTo(HaveOccurred())
-		if resp.StatusCode == http.StatusConflict {
-			_ = resp.Body.Close()
-			polID = firstGlobalPolicyID()
-		} else {
-			Expect(resp.StatusCode).To(Equal(http.StatusCreated), "create routing policy for embedded %s", serviceType)
-			var polBody map[string]interface{}
-			decodeJSON(resp, &polBody)
-			polID, _ = polBody["id"].(string)
-		}
+		polID, createdPolicy = createEmbeddedRoutingPolicy(serviceType, agentName)
 	}
-	Expect(polID).NotTo(BeEmpty(), "need a GLOBAL routing policy for embedded %s", serviceType)
+	Expect(polID).NotTo(BeEmpty(), "need a GLOBAL routing policy for embedded %s (agent %s)", serviceType, agentName)
 	embeddedCatalogPol[serviceType] = polID
+	if createdPolicy {
+		embeddedCreatedPolicies[polID] = true
+	}
 
 	catName := uniqueName("e2e-embed-cat-" + serviceType)
 	var catPayload string
@@ -204,6 +259,88 @@ func ensureEmbeddedCatalogRoute(serviceType string) (catalogItemID, agentName st
 	return catalogItemID, agentName
 }
 
+// cleanupEmbeddedCatalogRoutes deletes catalog-item-instances, then catalog
+// items created by this run, then only GLOBAL policies this run created
+// (never reused policies shared with other suites).
+func cleanupEmbeddedCatalogRoutes() {
+	embeddedCatalogMu.Lock()
+	instances := make([]string, 0, len(embeddedSTIToInst))
+	for _, instID := range embeddedSTIToInst {
+		if instID != "" {
+			instances = append(instances, instID)
+		}
+	}
+	catalogItems := make([]string, 0, len(embeddedCatalogItem))
+	for _, id := range embeddedCatalogItem {
+		if id != "" {
+			catalogItems = append(catalogItems, id)
+		}
+	}
+	createdPolicies := make([]string, 0, len(embeddedCreatedPolicies))
+	for id := range embeddedCreatedPolicies {
+		if id != "" {
+			createdPolicies = append(createdPolicies, id)
+		}
+	}
+	embeddedCatalogMu.Unlock()
+
+	for _, instID := range instances {
+		resp, err := doRequest(http.MethodDelete, "/catalog-item-instances/"+instID, "")
+		if err != nil {
+			GinkgoWriter.Printf("Warning: cleanup DELETE catalog-item-instance %s: %v\n", instID, err)
+			continue
+		}
+		if resp != nil {
+			_, _ = io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+		}
+		// Wait for async teardown so catalog-item delete does not hit a dependency conflict.
+		Eventually(func() int {
+			r, e := doRequest(http.MethodGet, "/catalog-item-instances/"+instID, "")
+			if e != nil {
+				return 0
+			}
+			defer r.Body.Close()
+			return r.StatusCode
+		}).WithTimeout(60 * time.Second).WithPolling(2 * time.Second).Should(Equal(http.StatusNotFound))
+	}
+
+	for _, id := range catalogItems {
+		resp, err := doRequest(http.MethodDelete, "/catalog-items/"+id, "")
+		if err != nil {
+			GinkgoWriter.Printf("Warning: cleanup DELETE catalog-item %s: %v\n", id, err)
+			continue
+		}
+		if resp != nil {
+			_, _ = io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+		}
+	}
+
+	for _, id := range createdPolicies {
+		resp, err := doRequest(http.MethodDelete, "/policies/"+id, "")
+		if err != nil {
+			GinkgoWriter.Printf("Warning: cleanup DELETE policy %s: %v\n", id, err)
+			continue
+		}
+		if resp != nil {
+			_, _ = io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+		}
+	}
+
+	embeddedCatalogMu.Lock()
+	embeddedSTIToInst = map[string]string{}
+	embeddedCatalogItem = map[string]string{}
+	embeddedCatalogPol = map[string]string{}
+	embeddedCreatedPolicies = map[string]bool{}
+	embeddedCatalogMu.Unlock()
+}
+
+var _ = AfterSuite(func() {
+	cleanupEmbeddedCatalogRoutes()
+})
+
 func createEmbeddedInstance(serviceType, displayName string, userValues []map[string]interface{}) (resourceID, instanceID string, status int, raw map[string]interface{}) {
 	GinkgoHelper()
 	catalogItemID, _ := ensureEmbeddedCatalogRoute(serviceType)
@@ -220,6 +357,12 @@ func createEmbeddedInstance(serviceType, displayName string, userValues []map[st
 			"user_values": %s
 		}
 	}`, displayName, catalogItemID, string(valuesJSON))
+
+	// Serialize the full snapshot→POST→resolve sequence. Without this, two
+	// concurrent embedded creates can observe the same new STI ID via the
+	// global before/after diff when run association is unavailable.
+	embeddedCreateResolveMu.Lock()
+	defer embeddedCreateResolveMu.Unlock()
 
 	before := listServiceTypeInstanceIDs()
 	resp, err := doRequest(http.MethodPost, "/catalog-item-instances", payload)

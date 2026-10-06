@@ -17,7 +17,7 @@ import (
 
 var _ = Describe("KubeVirt Service Provider API", Label("sp", "kubevirt"), func() {
 	BeforeEach(func() {
-		requireStandaloneKubevirtSP()
+		requireKubevirtSP()
 	})
 
 	Context("Health endpoint", func() {
@@ -545,7 +545,8 @@ var _ = Describe("KubeVirt Service Provider API", Label("sp", "kubevirt"), func(
 				GinkgoWriter.Printf("after halt API status=%v printableStatus=%v err=%v\n", api, cluster, err)
 
 				// Standalone SP GET is the contract under test. Embedded vm
-				// only updates STI slowly; CNV shows Terminating after Halted.
+				// only updates STI slowly; CNV shows Terminating after Halted,
+				// and the VM object may disappear (NotFound → "Gone").
 				if kubevirtStandaloneReady {
 					if api != "" {
 						return api
@@ -553,26 +554,49 @@ var _ = Describe("KubeVirt Service Provider API", Label("sp", "kubevirt"), func(
 					return cluster
 				}
 				if err != nil {
-					return "Gone"
+					if kubectlNotFound(out, err) {
+						return "Gone"
+					}
+					return ""
 				}
 				return cluster
 			}).WithTimeout(120 * time.Second).WithPolling(5 * time.Second).
 				Should(BeElementOf(haltedVMPhases()...),
 					"after external halt, status should leave Running (not still Running/Pending)")
 
-			// Confirm the runStrategy patch stuck
+			// Confirm the runStrategy patch stuck. In embedded mode the VM may
+			// already be deleted after Halted — accept NotFound as "Gone", never
+			// treat other kubectl errors as success.
 			Eventually(func() string {
 				out, err := runKubeCmd("get", "vm", clusterName, "-n", ns, "-o", "jsonpath={.spec.runStrategy}")
 				if err != nil {
-					if !kubevirtStandaloneReady {
-						return "Halted"
+					if !kubevirtStandaloneReady && kubectlNotFound(out, err) {
+						return "Gone"
 					}
 					return ""
 				}
 				return strings.TrimSpace(out)
-			}).WithTimeout(30 * time.Second).WithPolling(2 * time.Second).Should(Equal("Halted"))
+			}).WithTimeout(30 * time.Second).WithPolling(2 * time.Second).
+				Should(BeElementOf(func() []interface{} {
+					want := []interface{}{"Halted"}
+					if !kubevirtStandaloneReady {
+						want = append(want, "Gone")
+					}
+					return want
+				}()...), "runStrategy should be Halted, or VM NotFound in embedded mode")
 
-			Expect(setVMRunStrategy(clusterName, ns, "Always")).To(Succeed())
+			if kubevirtStandaloneReady {
+				Expect(setVMRunStrategy(clusterName, ns, "Always")).To(Succeed())
+			} else {
+				// Embedded: only restore Always when the VM still exists.
+				out, err := runKubeCmd("get", "vm", clusterName, "-n", ns)
+				if err == nil {
+					Expect(setVMRunStrategy(clusterName, ns, "Always")).To(Succeed())
+				} else {
+					Expect(kubectlNotFound(out, err)).To(BeTrue(),
+						"unexpected kubectl error checking VM after halt: %v", err)
+				}
+			}
 		})
 	})
 

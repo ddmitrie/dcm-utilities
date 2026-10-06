@@ -57,6 +57,9 @@ func skipUnlessDirectAcmClusterSP() {
 }
 
 func jsonHTTPResponse(status int, payload interface{}) (*http.Response, error) {
+	if status < 100 {
+		return nil, fmt.Errorf("embedded SP adapter: invalid HTTP status %d (control-plane request failed)", status)
+	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
@@ -69,6 +72,9 @@ func jsonHTTPResponse(status int, payload interface{}) (*http.Response, error) {
 }
 
 func emptyHTTPResponse(status int) (*http.Response, error) {
+	if status < 100 {
+		return nil, fmt.Errorf("embedded SP adapter: invalid HTTP status %d (control-plane request failed)", status)
+	}
 	rec := httptest.NewRecorder()
 	rec.WriteHeader(status)
 	return rec.Result(), nil
@@ -238,10 +244,10 @@ func createEmbeddedInstance(serviceType, displayName string, userValues []map[st
 	return resourceID, instanceID, status, raw
 }
 
-func getSTI(id string) (int, map[string]interface{}) {
+func getSTI(id string) (int, map[string]interface{}, error) {
 	resp, err := doRequest(http.MethodGet, "/service-type-instances/"+id, "")
 	if err != nil {
-		return 0, nil
+		return 0, nil, err
 	}
 	status := resp.StatusCode
 	var body map[string]interface{}
@@ -250,10 +256,10 @@ func getSTI(id string) (int, map[string]interface{}) {
 		_ = resp.Body.Close()
 		_ = json.Unmarshal(data, &body)
 	}
-	return status, body
+	return status, body, nil
 }
 
-func listSTIs(serviceType string, query url.Values) (int, map[string]interface{}) {
+func listSTIs(serviceType string, query url.Values) (int, map[string]interface{}, error) {
 	q := url.Values{}
 	q.Set("service_type", serviceType)
 	if v := query.Get("max_page_size"); v != "" {
@@ -264,7 +270,7 @@ func listSTIs(serviceType string, query url.Values) (int, map[string]interface{}
 	}
 	resp, err := doRequest(http.MethodGet, "/service-type-instances?"+q.Encode(), "")
 	if err != nil {
-		return 0, nil
+		return 0, nil, err
 	}
 	status := resp.StatusCode
 	var body map[string]interface{}
@@ -273,7 +279,7 @@ func listSTIs(serviceType string, query url.Values) (int, map[string]interface{}
 		_ = resp.Body.Close()
 		_ = json.Unmarshal(data, &body)
 	}
-	return status, body
+	return status, body, nil
 }
 
 func deleteEmbeddedResource(resourceID string) int {
@@ -350,6 +356,19 @@ func userValuesFromVMSpec(spec map[string]interface{}) (displayName string, valu
 	return displayName, values
 }
 
+func userValuesFromClusterSpec(spec map[string]interface{}) (displayName string, values []map[string]interface{}) {
+	displayName = uniqueName("e2e-embed-cluster")
+	if meta, ok := spec["metadata"].(map[string]interface{}); ok {
+		if n, _ := meta["name"].(string); n != "" {
+			displayName = n
+		}
+	}
+	values = []map[string]interface{}{
+		{"path": "metadata.name", "value": displayName, "resource": "main"},
+	}
+	return displayName, values
+}
+
 func parseSpecBody(body string) map[string]interface{} {
 	var wrapped map[string]interface{}
 	if err := json.Unmarshal([]byte(body), &wrapped); err != nil {
@@ -383,7 +402,10 @@ func doEmbeddedContainerSPRequest(method, path, body string) (*http.Response, er
 		}
 		return jsonHTTPResponse(http.StatusCreated, map[string]interface{}{"id": resourceID})
 	case method == http.MethodGet && strings.TrimSuffix(clean, "/") == "/containers":
-		st, raw := listSTIs("container", query)
+		st, raw, err := listSTIs("container", query)
+		if err != nil {
+			return nil, err
+		}
 		if st != http.StatusOK {
 			return jsonHTTPResponse(st, raw)
 		}
@@ -406,7 +428,10 @@ func doEmbeddedContainerSPRequest(method, path, body string) (*http.Response, er
 		return jsonHTTPResponse(http.StatusOK, resp)
 	case method == http.MethodGet && strings.HasPrefix(clean, "/containers/"):
 		id := strings.TrimPrefix(clean, "/containers/")
-		st, raw := getSTI(id)
+		st, raw, err := getSTI(id)
+		if err != nil {
+			return nil, err
+		}
 		if raw == nil {
 			raw = map[string]interface{}{}
 		}
@@ -449,7 +474,10 @@ func doEmbeddedKubevirtRequest(method, path, payload string) (*http.Response, er
 			"id":   id,
 		})
 	case method == http.MethodGet && strings.TrimSuffix(clean, "/") == "/vms":
-		st, raw := listSTIs("vm", query)
+		st, raw, err := listSTIs("vm", query)
+		if err != nil {
+			return nil, err
+		}
 		if st != http.StatusOK {
 			return jsonHTTPResponse(st, raw)
 		}
@@ -470,7 +498,10 @@ func doEmbeddedKubevirtRequest(method, path, payload string) (*http.Response, er
 		return jsonHTTPResponse(http.StatusOK, map[string]interface{}{"vms": vms})
 	case method == http.MethodGet && strings.HasPrefix(clean, "/vms/"):
 		id := strings.TrimPrefix(clean, "/vms/")
-		st, raw := getSTI(id)
+		st, raw, err := getSTI(id)
+		if err != nil {
+			return nil, err
+		}
 		if st != http.StatusOK {
 			return jsonHTTPResponse(st, raw)
 		}
@@ -507,16 +538,17 @@ func doEmbeddedAcmClusterSPRequest(method, path, body string) (*http.Response, e
 		if spec == nil {
 			return jsonHTTPResponse(http.StatusBadRequest, map[string]interface{}{"title": "invalid argument"})
 		}
-		name := uniqueName("e2e-embed-cluster")
-		resourceID, _, status, raw := createEmbeddedInstance("cluster", name, []map[string]interface{}{
-			{"path": "metadata.name", "value": name, "resource": "main"},
-		})
+		name, values := userValuesFromClusterSpec(spec)
+		resourceID, _, status, raw := createEmbeddedInstance("cluster", name, values)
 		if status != http.StatusCreated && status != http.StatusOK {
 			return jsonHTTPResponse(status, raw)
 		}
 		return jsonHTTPResponse(http.StatusCreated, map[string]interface{}{"id": resourceID})
 	case method == http.MethodGet && strings.TrimSuffix(clean, "/") == "/clusters":
-		st, raw := listSTIs("cluster", query)
+		st, raw, err := listSTIs("cluster", query)
+		if err != nil {
+			return nil, err
+		}
 		if st != http.StatusOK {
 			return jsonHTTPResponse(st, raw)
 		}
@@ -524,7 +556,10 @@ func doEmbeddedAcmClusterSPRequest(method, path, body string) (*http.Response, e
 		return jsonHTTPResponse(http.StatusOK, map[string]interface{}{"clusters": items})
 	case method == http.MethodGet && strings.HasPrefix(clean, "/clusters/"):
 		id := strings.TrimPrefix(clean, "/clusters/")
-		st, raw := getSTI(id)
+		st, raw, err := getSTI(id)
+		if err != nil {
+			return nil, err
+		}
 		return jsonHTTPResponse(st, raw)
 	case method == http.MethodDelete && strings.HasPrefix(clean, "/clusters/"):
 		id := strings.TrimPrefix(clean, "/clusters/")

@@ -81,7 +81,7 @@ func initEnvironmentAgent() {
 		}
 		for _, p := range list.Results {
 			st := strings.ToLower(strings.TrimSpace(p.ServiceType))
-			status := strings.EqualFold(p.Status, "Ready") || strings.EqualFold(p.Status, "ready")
+			status := strings.EqualFold(p.Status, "Ready")
 			if st == "" || !status {
 				continue
 			}

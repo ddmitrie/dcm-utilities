@@ -23,7 +23,7 @@ var _ = Describe("KubeVirt SP Status Monitoring", Label("sp", "kubevirt", "nats"
 	)
 
 	BeforeEach(func() {
-		requireStandaloneKubevirtSP()
+		requireKubevirtSP()
 		requireNATS()
 
 		natsURL := os.Getenv("DCM_NATS_URL")
@@ -255,7 +255,7 @@ func isPendingPhase(s string) bool {
 
 // haltedVMPhases is the post-Halted printable / SP status set. Standalone SP
 // GET uses Stopped/Stopping; agent-embedded CNV typically reports Terminating
-// (and the VM object may disappear).
+// (and the VM object may disappear — "Gone" only when kubectl reports NotFound).
 func haltedVMPhases() []interface{} {
 	phases := []interface{}{"Stopped", "Succeeded", "Stopping", "STOPPING", "STOPPED",
 		"stopped", "succeeded", "stopping"}

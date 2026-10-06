@@ -69,7 +69,7 @@ Service provider flags (forwarded to deploy-dcm.sh):
 
 Environment variables:
   DCM_AGENT_URL            Environment-agent API URL (default: http://localhost:8081/api/v1alpha1)
-  DCM_EMBEDDED_SPS         Optional hint list of embedded SPs; a live agent /providers list is always merged in
+  DCM_EMBEDDED_SPS         Optional discovery hint of embedded SPs (not readiness evidence); live /providers Ready types are merged for deploy awareness
   DCM_NETWORK_SP_ENABLED   Require the embedded Network SP (default: false; auto true when network is embedded)
   DCM_CONTAINER_SP_URL     Container SP direct URL (default: http://localhost:8082/api/v1alpha1)
   DCM_STORAGE_SP_URL       Storage SP direct URL (default: http://localhost:8089/api/v1alpha1)
@@ -237,6 +237,8 @@ print(",".join(seen))
 }
 
 # Ready service_type values from a live environment-agent /providers list.
+# Only status=Ready counts — deploy hints in DCM_EMBEDDED_SPS / AGENT_EMBEDDED_SPS
+# must not be treated as readiness evidence here.
 fetch_ready_embedded_sps() {
     local url="$1"
     curl -sf --connect-timeout 2 --max-time 5 "${url}/providers" 2>/dev/null \
@@ -259,8 +261,11 @@ print(",".join(out))
 # Detect a running agent and union its Ready providers into AGENT_EMBEDDED_SPS
 # even when DCM_EMBEDDED_SPS / --agent-embedded-sps / ENABLE_* were omitted
 # or only listed a subset (Jenkins often passes network,storage alone).
+# LIVE_READY_EMBEDDED_SPS is the Ready-only snapshot for suite enablement.
+LIVE_READY_EMBEDDED_SPS=""
 sync_environment_agent_from_live() {
     export DCM_AGENT_URL="${DCM_AGENT_URL:-http://localhost:${AGENT_PORT}/api/v1alpha1}"
+    LIVE_READY_EMBEDDED_SPS=""
     if ! curl -sf --connect-timeout 2 --max-time 5 "${DCM_AGENT_URL}/health" >/dev/null 2>&1; then
         return 0
     fi
@@ -268,13 +273,22 @@ sync_environment_agent_from_live() {
         WITH_ENVIRONMENT_AGENT=true
         info "Detected live environment agent at ${DCM_AGENT_URL}"
     fi
-    local live
-    live="$(fetch_ready_embedded_sps "${DCM_AGENT_URL}")"
-    if [[ -z "${live}" ]]; then
+    LIVE_READY_EMBEDDED_SPS="$(fetch_ready_embedded_sps "${DCM_AGENT_URL}")"
+    if [[ -z "${LIVE_READY_EMBEDDED_SPS}" ]]; then
         return 0
     fi
-    info "Live agent Ready providers: ${live}"
-    AGENT_EMBEDDED_SPS="$(merge_embedded_sps "${AGENT_EMBEDDED_SPS}" "${live}")"
+    info "Live agent Ready providers: ${LIVE_READY_EMBEDDED_SPS}"
+    AGENT_EMBEDDED_SPS="$(merge_embedded_sps "${AGENT_EMBEDDED_SPS}" "${LIVE_READY_EMBEDDED_SPS}")"
+}
+
+live_ready_contains() {
+    local needle="$1"
+    local norm
+    norm="$(printf '%s' "${LIVE_READY_EMBEDDED_SPS}" | tr -d '[:space:]')"
+    case ",${norm}," in
+        *,"${needle}",*) return 0 ;;
+        *) return 1 ;;
+    esac
 }
 
 while [[ $# -gt 0 ]]; do
@@ -405,6 +419,20 @@ if [[ "${WITH_ENVIRONMENT_AGENT}" == "true" && "${SKIP_DEPLOY}" == "false" ]]; t
         DEPLOY_ARGS+=(--agent-embedded-sps "${AGENT_EMBEDDED_SPS}")
     fi
 fi
+
+# Resolve the VM namespace used by the embedded provider (SP_VM_NAMESPACE) and
+# by Ginkgo cluster lookups (KUBERNETES_NAMESPACE / KUBEVIRT_VM_NAMESPACE).
+# Must run before deploy so deploy-dcm.sh writes the same value into deploy/.env.
+resolve_embedded_vm_namespace() {
+    [[ "${WITH_ENVIRONMENT_AGENT}" == "true" ]] || return 0
+    agent_list_contains vm || return 0
+    local vm_ns="${SP_VM_NAMESPACE:-${KUBEVIRT_VM_NS_ARG:-${KUBEVIRT_VM_NAMESPACE:-default}}}"
+    export SP_VM_NAMESPACE="${vm_ns}"
+    export KUBERNETES_NAMESPACE="${KUBERNETES_NAMESPACE:-${vm_ns}}"
+    export KUBEVIRT_VM_NAMESPACE="${vm_ns}"
+    info "Embedded VM namespace: SP_VM_NAMESPACE=${SP_VM_NAMESPACE} (lookups: KUBERNETES_NAMESPACE=${KUBERNETES_NAMESPACE})"
+}
+resolve_embedded_vm_namespace
 
 # --- Main ------------------------------------------------------------------ #
 
@@ -649,10 +677,13 @@ fi
 # even without DCM_EMBEDDED_SPS, --agent-embedded-sps, or ENABLE_* toggles.
 sync_environment_agent_from_live
 if [[ "${WITH_ENVIRONMENT_AGENT}" == "true" ]]; then
+    # Discovery hint for Ginkgo (deployed/requested embeds). Readiness is decided
+    # by live /providers inside the tests — do not treat this as Ready evidence.
     export DCM_EMBEDDED_SPS="${AGENT_EMBEDDED_SPS}"
     info "DCM_AGENT_URL=${DCM_AGENT_URL}"
-    info "DCM_EMBEDDED_SPS=${DCM_EMBEDDED_SPS:-}"
-    if agent_list_contains network || [[ "${DCM_NETWORK_SP_ENABLED:-}" == "true" ]]; then
+    info "DCM_EMBEDDED_SPS=${DCM_EMBEDDED_SPS:-} (discovery hint; Ready=${LIVE_READY_EMBEDDED_SPS:-none})"
+    # Auto-enable the network suite only from live Ready (or an explicit prior set).
+    if [[ "${DCM_NETWORK_SP_ENABLED:-}" == "true" ]] || live_ready_contains network; then
         export DCM_NETWORK_SP_ENABLED=true
         info "DCM_NETWORK_SP_ENABLED=true"
     fi
@@ -691,13 +722,10 @@ if [[ "${ENABLE_KUBEVIRT_SP}" == "true" ]]; then
     export KUBEVIRT_VM_NAMESPACE="${KUBEVIRT_VM_NAMESPACE:-${KUBERNETES_NAMESPACE}}"
     info "KUBERNETES_NAMESPACE=${KUBERNETES_NAMESPACE}"
 fi
-# Agent-embedded vm still needs a namespace hint for cluster lookups in core tests.
+# Agent-embedded vm: keep Ginkgo lookups on the same NS written to SP_VM_NAMESPACE
+# at deploy time (resolve_embedded_vm_namespace). Re-run for --skip-deploy paths.
 if [[ "${WITH_ENVIRONMENT_AGENT}" == "true" ]] && agent_list_contains vm; then
-    if [[ -z "${KUBERNETES_NAMESPACE:-}" ]]; then
-        export KUBERNETES_NAMESPACE="${KUBEVIRT_VM_NS_ARG:-${KUBEVIRT_VM_NAMESPACE:-default}}"
-    fi
-    export KUBEVIRT_VM_NAMESPACE="${KUBEVIRT_VM_NAMESPACE:-${KUBERNETES_NAMESPACE}}"
-    info "KUBERNETES_NAMESPACE=${KUBERNETES_NAMESPACE} (agent-embedded vm)"
+    resolve_embedded_vm_namespace
 fi
 
 run_ginkgo_suite() {

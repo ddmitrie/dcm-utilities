@@ -66,7 +66,10 @@ func initContainerSP() {
 // or the environment-agent embeds a Ready container provider.
 func containerCapabilityAvailable() bool {
 	initContainerSP()
-	return containerSPReady || agentEmbeds("container")
+	if containerSPReady {
+		return true
+	}
+	return waitForAgentEmbed("container", 30*time.Second)
 }
 
 // requireContainerSP skips unless container workloads can be provisioned via
@@ -75,13 +78,6 @@ func requireContainerSP() {
 	if !containerCapabilityAvailable() {
 		Skip("Container capability not available (standalone --k8s-container-service-provider on :8082, or --with-environment-agent embedding container)")
 	}
-}
-
-// requireStandaloneContainerSP is an alias of requireContainerSP for existing
-// specs. Use skipUnlessDirectContainerSP() when the spec needs the standalone
-// :8082 OpenAPI contract.
-func requireStandaloneContainerSP() {
-	requireContainerSP()
 }
 
 // doContainerSPRequest sends a request to the container SP HTTP API when a

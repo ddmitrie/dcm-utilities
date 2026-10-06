@@ -216,8 +216,10 @@ func discoverAgentByServiceType(serviceType, overrideName string) string {
 // catalog-item-instance create/rehydrate response.
 //
 // Breaking change: control-plane#39 removed spec.resource_ids and added run_id.
-// When resource_ids are absent, newly appeared service-type-instance IDs
-// (relative to before) are treated as the placement resource IDs.
+// Prefer instance-specific association via the returned run (GET /runs/{run_id})
+// when the gateway exposes it. Otherwise newly appeared service-type-instance
+// IDs (relative to before) are treated as candidates — callers that can race
+// with other creates must serialize snapshot→POST→resolve so Unique sees one ID.
 //
 // The disambiguation logic itself (legacy extraction, single-candidate
 // selection) is pure and lives in internal/resolve, where it has real unit
@@ -235,10 +237,62 @@ func resolveResourceIDAfterCreate(body map[string]interface{}, before map[string
 	Expect(runID).NotTo(BeEmpty(),
 		"catalog-item-instance response missing run_id and spec.resource_ids")
 
+	if id, ok := resourceIDFromRun(runID); ok {
+		runResourceIDCache[runID] = id
+		return id
+	}
+
 	ids := waitForNewServiceTypeInstanceIDs(before, 1, 60*time.Second)
 	id, err := resolve.Unique(ids)
 	Expect(err).NotTo(HaveOccurred(),
 		"could not resolve placement resource ID after create (run_id=%s)", runID)
 	runResourceIDCache[runID] = id
 	return id
+}
+
+// resourceIDFromRun tries GET /runs/{runID} for an instance-specific resource
+// association. Returns false when the gateway does not expose runs (common).
+func resourceIDFromRun(runID string) (string, bool) {
+	if runID == "" {
+		return "", false
+	}
+	resp, err := doRequest(http.MethodGet, "/runs/"+runID, "")
+	if err != nil || resp == nil {
+		return "", false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", false
+	}
+
+	var run map[string]interface{}
+	data, err := io.ReadAll(resp.Body)
+	if err != nil || json.Unmarshal(data, &run) != nil {
+		return "", false
+	}
+	resources, _ := run["resources"].([]interface{})
+	for _, raw := range resources {
+		r, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		id, _ := r["id"].(string)
+		if id == "" {
+			continue
+		}
+		// Placement resource IDs become service-type-instance IDs; wait until
+		// the STI is queryable before returning.
+		Eventually(func() int {
+			stiResp, stiErr := doRequest(http.MethodGet, "/service-type-instances/"+id, "")
+			if stiErr != nil || stiResp == nil {
+				return 0
+			}
+			defer stiResp.Body.Close()
+			_, _ = io.ReadAll(stiResp.Body)
+			return stiResp.StatusCode
+		}).WithTimeout(60 * time.Second).WithPolling(2 * time.Second).Should(Equal(http.StatusOK),
+			"placement run %s resource %s did not appear as a service-type-instance", runID, id)
+		return id, true
+	}
+	return "", false
 }

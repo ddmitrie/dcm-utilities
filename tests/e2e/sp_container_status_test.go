@@ -16,7 +16,7 @@ import (
 
 var _ = Describe("Container SP Status Events", Label("sp", "container", "nats"), func() {
 	BeforeEach(func() {
-		requireStandaloneContainerSP()
+		requireContainerSP()
 	})
 
 	Context("CloudEvent format", Ordered, func() {
@@ -338,7 +338,7 @@ var _ = Describe("Container SP Status Events", Label("sp", "container", "nats"),
 		var containerID string
 
 		BeforeAll(func() {
-			requireStandaloneContainerSP()
+			requireContainerSP()
 			requirePodman()
 		})
 

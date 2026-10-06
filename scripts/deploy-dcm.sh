@@ -817,7 +817,10 @@ ensure_deploy_env() {
         upsert_deploy_env_var "${deploy_dir}" "AGENT_KUBECONFIG_HOST" "${DCM_KUBECONFIG}"
         upsert_deploy_env_var "${deploy_dir}" "SP_CONTAINER_NAMESPACE" "$(env_or_default SP_CONTAINER_NAMESPACE default)"
         upsert_deploy_env_var "${deploy_dir}" "SP_K8S_EXTERNAL_SVC_TYPE" "$(env_or_default SP_K8S_EXTERNAL_SVC_TYPE NodePort)"
-        upsert_deploy_env_var "${deploy_dir}" "SP_VM_NAMESPACE" "$(env_or_default SP_VM_NAMESPACE default)"
+        # Prefer SP_VM_NAMESPACE; else KUBEVIRT_VM_NAMESPACE from --kubevirt-vm-namespace
+        # / env (even when standalone kubevirt is not enabled). Default remains "default"
+        # for the agent-embedded path (standalone kubevirt defaults to "vms").
+        upsert_deploy_env_var "${deploy_dir}" "SP_VM_NAMESPACE" "$(env_or_default SP_VM_NAMESPACE "$(env_or_default KUBEVIRT_VM_NAMESPACE default)")"
         upsert_deploy_env_var "${deploy_dir}" "SP_STORAGE_NAMESPACE" "$(env_or_default SP_STORAGE_NAMESPACE default)"
         if agent_embeds cluster; then
             # Required by embedded acmcluster config — never leave empty placeholders
@@ -987,6 +990,12 @@ while [[ $# -gt 0 ]]; do
                     namespace)
                         require_arg "$1" "${2:-}"
                         PROV_NAMESPACES[MATCHED_IDX]="${2:-}"
+                        # Keep NAMESPACE_ENV in sync so agent embeds (e.g. SP_VM_NAMESPACE
+                        # via KUBEVIRT_VM_NAMESPACE) see the same value when the
+                        # standalone provider profile is not enabled.
+                        if [[ -n "${PROV_NS_ENVS[MATCHED_IDX]}" ]]; then
+                            export "${PROV_NS_ENVS[MATCHED_IDX]}=${2:-}"
+                        fi
                         shift 2 ;;
                 esac
             else

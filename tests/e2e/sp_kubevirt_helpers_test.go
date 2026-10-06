@@ -71,7 +71,10 @@ func sameHTTPAuthority(a, b string) bool {
 
 func kubevirtCapabilityAvailable() bool {
 	initKubevirtSP()
-	return kubevirtStandaloneReady || agentEmbeds("vm")
+	if kubevirtStandaloneReady {
+		return true
+	}
+	return waitForAgentEmbed("vm", 30*time.Second)
 }
 
 // requireKubevirtSP skips unless VM workloads can be provisioned via the
@@ -80,13 +83,6 @@ func requireKubevirtSP() {
 	if !kubevirtCapabilityAvailable() {
 		Skip("KubeVirt capability not available (standalone --kubevirt-service-provider, or --with-environment-agent embedding vm)")
 	}
-}
-
-// requireStandaloneKubevirtSP is an alias of requireKubevirtSP for existing
-// specs. Use skipUnlessDirectKubevirtSP() when the spec needs the standalone
-// SP HTTP contract. Embedded vm still publishes dcm.vm.
-func requireStandaloneKubevirtSP() {
-	requireKubevirtSP()
 }
 
 // requireNATS skips the test if NATS is not reachable at DCM_NATS_URL.
@@ -683,11 +679,20 @@ func verifyVMDeleted(vmName, namespace string) error {
 	if err == nil {
 		return fmt.Errorf("VM %s still exists in namespace %s", vmName, namespace)
 	}
-	blob := strings.ToLower(out + " " + err.Error())
-	if strings.Contains(blob, "notfound") || strings.Contains(blob, "not found") {
+	if kubectlNotFound(out, err) {
 		return nil
 	}
 	return fmt.Errorf("failed checking VM %s/%s deleted: %w (%s)", namespace, vmName, err, strings.TrimSpace(out))
+}
+
+// kubectlNotFound is true when kubectl/oc output indicates the object is missing.
+// Other errors (auth, connectivity, timeouts) must not be treated as deletion.
+func kubectlNotFound(out string, err error) bool {
+	if err == nil {
+		return false
+	}
+	blob := strings.ToLower(out + " " + err.Error())
+	return strings.Contains(blob, "notfound") || strings.Contains(blob, "not found")
 }
 
 // checkClusterAccess verifies kubectl/oc connectivity

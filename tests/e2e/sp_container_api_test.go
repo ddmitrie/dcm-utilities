@@ -12,7 +12,7 @@ import (
 
 var _ = Describe("Container SP API", Label("sp", "container"), func() {
 	BeforeEach(func() {
-		requireStandaloneContainerSP()
+		requireContainerSP()
 	})
 
 	Context("registration", func() {

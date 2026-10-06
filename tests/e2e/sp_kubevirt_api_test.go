@@ -415,9 +415,7 @@ var _ = Describe("KubeVirt Service Provider API", Label("sp", "kubevirt"), func(
 			for i := 0; i < n; i++ {
 				Expect(errs[i]).NotTo(HaveOccurred(), "create %d", i)
 				Expect(ids[i]).NotTo(BeEmpty())
-				if kubevirtStandaloneReady {
-					Expect(uuid.Validate(ids[i])).To(Succeed(), "create %d id should be a UUID", i)
-				}
+				Expect(uuid.Validate(ids[i])).To(Succeed(), "create %d id should be a UUID", i)
 			}
 			// Unique IDs
 			seen := map[string]bool{}

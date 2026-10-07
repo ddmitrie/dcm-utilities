@@ -423,12 +423,20 @@ fi
 # Resolve the VM namespace used by the embedded provider (SP_VM_NAMESPACE) and
 # by Ginkgo cluster lookups (KUBERNETES_NAMESPACE / KUBEVIRT_VM_NAMESPACE).
 # Must run before deploy so deploy-dcm.sh writes the same value into deploy/.env.
+# kubevirtNamespace() prefers KUBERNETES_NAMESPACE over KUBEVIRT_VM_NAMESPACE, so
+# all three must agree — otherwise the provider creates in one NS and assertions
+# look in another.
 resolve_embedded_vm_namespace() {
     [[ "${WITH_ENVIRONMENT_AGENT}" == "true" ]] || return 0
     agent_list_contains vm || return 0
     local vm_ns="${SP_VM_NAMESPACE:-${KUBEVIRT_VM_NS_ARG:-${KUBEVIRT_VM_NAMESPACE:-default}}}"
+    if [[ -n "${KUBERNETES_NAMESPACE:-}" && "${KUBERNETES_NAMESPACE}" != "${vm_ns}" ]]; then
+        err "KUBERNETES_NAMESPACE=${KUBERNETES_NAMESPACE} conflicts with embedded VM namespace ${vm_ns}"
+        err "Align SP_VM_NAMESPACE / --kubevirt-vm-namespace / KUBEVIRT_VM_NAMESPACE with KUBERNETES_NAMESPACE, or unset KUBERNETES_NAMESPACE"
+        exit 1
+    fi
     export SP_VM_NAMESPACE="${vm_ns}"
-    export KUBERNETES_NAMESPACE="${KUBERNETES_NAMESPACE:-${vm_ns}}"
+    export KUBERNETES_NAMESPACE="${vm_ns}"
     export KUBEVIRT_VM_NAMESPACE="${vm_ns}"
     info "Embedded VM namespace: SP_VM_NAMESPACE=${SP_VM_NAMESPACE} (lookups: KUBERNETES_NAMESPACE=${KUBERNETES_NAMESPACE})"
 }

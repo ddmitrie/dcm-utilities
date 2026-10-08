@@ -23,8 +23,13 @@ var (
 	agentInitOnce sync.Once
 	agentBaseURL  string
 	agentHealthy  bool
-	// embeddedReady maps service_type → Ready via agent GET /providers only.
+	// embeddedReady maps service_type → Ready (live /providers, or provisional
+	// env hint only while /providers is unavailable).
 	embeddedReady = map[string]bool{}
+	// embeddedProvisional marks Ready values seeded from DCM_EMBEDDED_SPS when
+	// /providers could not be read. Cleared on the next successful refresh so
+	// a later live not-Ready/absent response cannot keep returning true.
+	embeddedProvisional = map[string]bool{}
 	// embeddedSeen maps service_type → present in a successful /providers list
 	// (any status). Used so env hints never override a live not-Ready entry.
 	embeddedSeen = map[string]bool{}
@@ -98,9 +103,10 @@ func loadEmbeddedHints() {
 }
 
 // refreshEmbeddedProviders re-fetches agent GET /providers and merges Ready
-// service types into embeddedReady. Positive readiness is sticky; call again
-// to pick up providers that were not Ready on the first probe. Types present
-// in the list (any status) are recorded in embeddedSeen.
+// service types into embeddedReady. Live-confirmed Ready stays sticky across
+// probes; provisional hint Ready is cleared when the live list does not
+// confirm Ready. Types present in the list (any status) are recorded in
+// embeddedSeen.
 func refreshEmbeddedProviders() bool {
 	if agentBaseURL == "" {
 		agentBaseURL = strings.TrimRight(os.Getenv(defaultAgentURLEnv), "/")
@@ -137,22 +143,34 @@ func refreshEmbeddedProviders() bool {
 		if !strings.EqualFold(p.Status, "Ready") {
 			continue
 		}
-		if !embeddedReady[st] {
+		if !embeddedReady[st] || embeddedProvisional[st] {
 			GinkgoWriter.Printf("Embedded SP ready via agent: %s (type=%s)\n", st, p.Type)
 		}
 		embeddedReady[st] = true
+		delete(embeddedProvisional, st)
+	}
+	// Drop provisional Ready that the live list did not confirm (absent or
+	// non-Ready). Entries confirmed Ready above already left embeddedProvisional.
+	for st := range embeddedProvisional {
+		if embeddedReady[st] {
+			GinkgoWriter.Printf("Clearing provisional Ready for %s (absent or not Ready in /providers)\n", st)
+		}
+		embeddedReady[st] = false
+		delete(embeddedProvisional, st)
 	}
 	return true
 }
 
 // seedEmbeddedReadyFromHints marks hinted types Ready only when /providers
-// could not be used. Never call this after a successful /providers decode.
+// could not be used. Marks them provisional so a later successful /providers
+// response can clear Ready when the type is absent or not Ready.
 func seedEmbeddedReadyFromHints(reason string) {
 	for tok := range embeddedHinted {
-		if embeddedReady[tok] {
+		if embeddedReady[tok] && !embeddedProvisional[tok] {
 			continue
 		}
 		embeddedReady[tok] = true
+		embeddedProvisional[tok] = true
 		GinkgoWriter.Printf("Embedded SP provisional Ready from %s (%s): %s\n", embeddedSPsEnv, reason, tok)
 	}
 }
@@ -204,8 +222,9 @@ func environmentAgentHealthy() bool {
 	return agentHealthy
 }
 
-// agentEmbeds reports live Ready (or provisional Ready only when /providers
-// was unavailable at init). Prefer waitForAgentEmbed before enabling suites.
+// agentEmbeds reports live Ready, or provisional Ready only while /providers
+// remains unavailable after init. Prefer waitForAgentEmbed before enabling
+// suites so a recovered /providers list can clear stale provisional Ready.
 func agentEmbeds(serviceType string) bool {
 	initEnvironmentAgent()
 	return embeddedReady[strings.ToLower(strings.TrimSpace(serviceType))]

@@ -109,9 +109,21 @@ func policySelectsAgent(regoCode, agentName string) bool {
 		strings.Contains(regoCode, fmt.Sprintf(`"selected_agent":"%s"`, agentName))
 }
 
-// findGlobalPolicySelectingAgent returns a GLOBAL policy whose rego selects
-// agentName. Non-200 list responses and GLOBAL policies for other agents are
-// ignored so embedded workloads are not mis-routed.
+// policyEnabled reports whether a policy is active. Missing "enabled" is
+// treated as true (control-plane default); an explicit false is skipped.
+func policyEnabled(p map[string]interface{}) bool {
+	if v, ok := p["enabled"]; ok {
+		if b, ok := v.(bool); ok {
+			return b
+		}
+	}
+	return true
+}
+
+// findGlobalPolicySelectingAgent returns an enabled GLOBAL policy whose rego
+// selects agentName. Non-200 list responses, disabled policies, and GLOBAL
+// policies for other agents are ignored so embedded workloads are not
+// mis-routed.
 func findGlobalPolicySelectingAgent(agentName string) string {
 	resp, err := doRequest(http.MethodGet, "/policies?max_page_size=100", "")
 	if err != nil || resp == nil {
@@ -135,7 +147,7 @@ func findGlobalPolicySelectingAgent(agentName string) string {
 		pt, _ := p["policy_type"].(string)
 		id, _ := p["id"].(string)
 		rego, _ := p["rego_code"].(string)
-		if !strings.EqualFold(pt, "GLOBAL") || id == "" {
+		if !strings.EqualFold(pt, "GLOBAL") || id == "" || !policyEnabled(p) {
 			continue
 		}
 		if policySelectsAgent(rego, agentName) {
@@ -146,14 +158,18 @@ func findGlobalPolicySelectingAgent(agentName string) string {
 }
 
 // createEmbeddedRoutingPolicy creates a GLOBAL policy that selects agentName.
-// Unique priorities avoid 409 against an existing GLOBAL that routes elsewhere.
-// Returns (id, createdByUs).
+// Unique priorities (1–1000, control-plane range) avoid 409 against an
+// existing GLOBAL that routes elsewhere. Returns (id, createdByUs).
 func createEmbeddedRoutingPolicy(serviceType, agentName string) (string, bool) {
 	GinkgoHelper()
 	for attempt := 0; attempt < 8; attempt++ {
+		// Control-plane accepts priority 1–1000 only.
 		priority := 50
 		if attempt > 0 {
-			priority = 200 + int(time.Now().UnixNano()%7000) + attempt
+			priority = 1 + (attempt*97+int(time.Now().UnixNano()%900))%1000
+			if priority == 50 {
+				priority = 51
+			}
 		}
 		pkg := fmt.Sprintf("e2e_embed_%s_%d", strings.ReplaceAll(serviceType, "-", "_"), time.Now().UnixNano())
 		polName := uniqueName("e2e-embed-pol-" + serviceType)
@@ -161,6 +177,7 @@ func createEmbeddedRoutingPolicy(serviceType, agentName string) (string, bool) {
 		"display_name": %q,
 		"policy_type": "GLOBAL",
 		"priority": %d,
+		"enabled": true,
 		"description": "E2E embedded SP route for %s",
 		"rego_code": "package %s\n\nmain := {\"selected_agent\": \"%s\"}"
 	}`, polName, priority, agentName, pkg, agentName)

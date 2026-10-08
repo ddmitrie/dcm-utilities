@@ -22,7 +22,7 @@ import (
 // plane (catalog → agent). OpenAPI-specific SP contract tests still skip.
 
 var (
-	embeddedCatalogMu       sync.Mutex
+	embeddedCatalogMu sync.Mutex
 	// embeddedCreateResolveMu serializes snapshot→POST→resolve so concurrent
 	// embedded creates cannot share the same global before/after STI diff.
 	embeddedCreateResolveMu sync.Mutex
@@ -213,6 +213,17 @@ func ensureEmbeddedCatalogRoute(serviceType string) (catalogItemID, agentName st
 	catName := uniqueName("e2e-embed-cat-" + serviceType)
 	var catPayload string
 	switch serviceType {
+	case "storage":
+		catPayload = fmt.Sprintf(`{
+			"api_version": "v1alpha1",
+			"display_name": %q,
+			"spec": {"resources": [{"name": "volume", "service_type": "storage", "fields": [
+				{"path": "metadata.name", "display_name": "Volume name", "editable": true, "default": %q},
+				{"path": "capacity", "display_name": "Capacity", "editable": true, "default": "1Gi"},
+				{"path": "provider_hints.kubernetes.storage_class", "display_name": "StorageClass", "editable": false, "default": %q},
+				{"path": "provider_hints.kubernetes.access_mode", "display_name": "Access mode", "editable": false, "default": "ReadWriteOnce"}
+			]}]}
+		}`, catName, catName, storageClassForE2E())
 	case "vm":
 		catPayload = fmt.Sprintf(`{
 			"api_version": "v1alpha1",
@@ -294,6 +305,10 @@ func cleanupEmbeddedCatalogRoutes() {
 			_, _ = io.ReadAll(resp.Body)
 			_ = resp.Body.Close()
 		}
+		if resp == nil || resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+			GinkgoWriter.Printf("Warning: cleanup DELETE catalog-item-instance %s returned HTTP %d; skipping wait for deletion\n", instID, responseStatus(resp))
+			continue
+		}
 		// Wait for async teardown so catalog-item delete does not hit a dependency conflict.
 		Eventually(func() int {
 			r, e := doRequest(http.MethodGet, "/catalog-item-instances/"+instID, "")
@@ -335,6 +350,13 @@ func cleanupEmbeddedCatalogRoutes() {
 	embeddedCatalogPol = map[string]string{}
 	embeddedCreatedPolicies = map[string]bool{}
 	embeddedCatalogMu.Unlock()
+}
+
+func responseStatus(resp *http.Response) int {
+	if resp == nil {
+		return 0
+	}
+	return resp.StatusCode
 }
 
 var _ = AfterSuite(func() {

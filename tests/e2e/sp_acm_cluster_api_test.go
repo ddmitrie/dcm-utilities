@@ -3,7 +3,11 @@
 package e2e_test
 
 import (
+	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
+	"os"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -135,6 +139,19 @@ var _ = Describe("ACM Cluster SP API", Label("sp", "acm-cluster"), func() {
 			Expect(resp.StatusCode).To(Equal(http.StatusBadRequest))
 		})
 
+		It("rejects an unsupported Kubernetes version [TC-14]", Label("core", "negative"), func() {
+			skipUnlessDirectAcmClusterSP()
+
+			resp, err := doAcmClusterSPRequest(http.MethodPost, "/clusters", acmClusterRequest(uniqueName("e2e-unsupported"), "1.99"))
+			Expect(err).NotTo(HaveOccurred())
+			defer resp.Body.Close()
+			Expect(resp.StatusCode).To(Equal(http.StatusUnprocessableEntity))
+
+			body, readErr := io.ReadAll(resp.Body)
+			Expect(readErr).NotTo(HaveOccurred())
+			Expect(string(body)).To(ContainSubstring("unsupported"))
+		})
+
 	})
 
 	Context("RFC 9457 error format", Label("contract"), func() {
@@ -236,4 +253,123 @@ var _ = Describe("ACM Cluster SP API", Label("sp", "acm-cluster"), func() {
 			Expect(resp.StatusCode).To(Equal(http.StatusNotFound))
 		})
 	})
+
+	Context("core lifecycle", Label("core", "cluster"), Ordered, func() {
+		var clusterID string
+		var clusterName string
+
+		BeforeAll(func() {
+			skipUnlessDirectAcmClusterSP()
+			requireKubectl()
+
+			_, err := runKubectlInNamespace(acmClusterNamespace(), "get", "crd", "hostedclusters.hypershift.openshift.io")
+			if err != nil {
+				Skip("HyperShift CRDs not installed — ACM cluster lifecycle requires HyperShift")
+			}
+		})
+
+		AfterAll(func() {
+			if clusterID != "" {
+				deleteTestCluster(clusterID)
+			}
+		})
+
+		It("creates a KubeVirt cluster and waits for HostedCluster availability [TC-04]", func() {
+			clusterName = uniqueName("e2e-acm")
+			resp, err := doAcmClusterSPRequest(http.MethodPost, "/clusters", acmClusterRequest(clusterName, acmClusterKubernetesVersion()))
+			Expect(err).NotTo(HaveOccurred())
+			body, readErr := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			Expect(readErr).NotTo(HaveOccurred())
+			Expect(resp.StatusCode).To(SatisfyAny(Equal(http.StatusCreated), Equal(http.StatusOK)), string(body))
+
+			var created map[string]interface{}
+			Expect(json.Unmarshal(body, &created)).To(Succeed())
+			clusterID, _ = created["id"].(string)
+			if clusterID == "" {
+				if path, ok := created["path"].(string); ok {
+					clusterID = extractIDFromPath(path)
+				}
+			}
+			Expect(clusterID).NotTo(BeEmpty(), "create response should include cluster id or path")
+
+			Eventually(func() bool {
+				return hostedClusterAvailable(clusterName)
+			}).WithTimeout(10*time.Minute).WithPolling(15*time.Second).Should(BeTrue(),
+				"HostedCluster %s should become Available", clusterName)
+		})
+
+		It("deletes the KubeVirt cluster and waits for cleanup [TC-06]", func() {
+			Expect(clusterID).NotTo(BeEmpty(), "create test must run before delete test")
+
+			resp, err := doAcmClusterSPRequest(http.MethodDelete, "/clusters/"+clusterID, "")
+			Expect(err).NotTo(HaveOccurred())
+			resp.Body.Close()
+			Expect(resp.StatusCode).To(SatisfyAny(Equal(http.StatusOK), Equal(http.StatusNoContent), Equal(http.StatusAccepted)))
+
+			Eventually(func() bool {
+				_, err := runKubectlInNamespace(acmClusterNamespace(), "get", "hostedcluster", clusterName)
+				return err != nil
+			}).WithTimeout(10*time.Minute).WithPolling(15*time.Second).Should(BeTrue(),
+				"HostedCluster %s should be removed", clusterName)
+
+			Eventually(func() int {
+				getResp, getErr := doAcmClusterSPRequest(http.MethodGet, "/clusters/"+clusterID, "")
+				if getErr != nil {
+					return 0
+				}
+				getResp.Body.Close()
+				return getResp.StatusCode
+			}).WithTimeout(2 * time.Minute).WithPolling(5 * time.Second).Should(Equal(http.StatusNotFound))
+			clusterID = ""
+		})
+	})
 })
+
+func acmClusterRequest(name, version string) string {
+	baseDomain := os.Getenv("DCM_ACM_BASE_DOMAIN")
+	if baseDomain == "" {
+		baseDomain = os.Getenv("SP_BASE_DOMAIN")
+	}
+	if baseDomain == "" {
+		baseDomain = "dcm-test.qe.lab.redhat.com"
+	}
+
+	return fmt.Sprintf(`{"spec":{"metadata":{"name":%q},"service_type":"cluster","version":%q,"provider_hints":{"acm":{"platform":"kubevirt","base_domain":%q}}}}`, name, version, baseDomain)
+}
+
+func acmClusterKubernetesVersion() string {
+	if version := os.Getenv("DCM_ACM_KUBERNETES_VERSION"); version != "" {
+		return version
+	}
+	return "1.31"
+}
+
+func acmClusterNamespace() string {
+	if namespace := os.Getenv("SP_CLUSTER_NAMESPACE"); namespace != "" {
+		return namespace
+	}
+	return "clusters"
+}
+
+func hostedClusterAvailable(name string) bool {
+	out, err := runKubectlInNamespace(acmClusterNamespace(), "get", "hostedcluster", name, "-o", "json")
+	if err != nil {
+		return false
+	}
+
+	var hostedCluster map[string]interface{}
+	if json.Unmarshal([]byte(out), &hostedCluster) != nil {
+		return false
+	}
+	status, _ := hostedCluster["status"].(map[string]interface{})
+	conditions, _ := status["conditions"].([]interface{})
+	for _, raw := range conditions {
+		condition, _ := raw.(map[string]interface{})
+		if condition["type"] == "Available" && condition["status"] == "True" {
+			return true
+		}
+	}
+
+	return false
+}

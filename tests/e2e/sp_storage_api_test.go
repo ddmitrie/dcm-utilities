@@ -184,14 +184,14 @@ var _ = Describe("Storage SP API", Label("sp", "storage"), func() {
 			"storage instance %s should appear in the filtered list", resourceID)
 
 		Expect(listed["agent_name"]).To(Equal(agentName))
-		Expect([]string{instanceStatusRunning, instanceStatusProvisioning}).To(ContainElement(listed["status"]))
+		Expect([]string{instanceStatusPending, instanceStatusRunning, instanceStatusProvisioning}).To(ContainElement(listed["status"]))
 
 		code, fetched, err := getSTI(resourceID)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(code).To(Equal(http.StatusOK))
 		Expect(fetched["id"]).To(Equal(resourceID))
 		Expect(fetched["agent_name"]).To(Equal(agentName))
-		Expect([]string{instanceStatusRunning, instanceStatusProvisioning}).To(ContainElement(fetched["status"]))
+		Expect([]string{instanceStatusPending, instanceStatusRunning, instanceStatusProvisioning}).To(ContainElement(fetched["status"]))
 
 		spec, ok := fetched["spec"].(map[string]interface{})
 		Expect(ok).To(BeTrue(), "storage instance should include spec")

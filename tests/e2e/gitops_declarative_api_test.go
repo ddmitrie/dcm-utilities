@@ -3,7 +3,10 @@
 package e2e_test
 
 import (
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -25,6 +28,8 @@ var _ = Describe("GitOps Declarative API", Label("api", "declarative", "gitops")
 		repositoryURL  string
 		repositoryRef  string
 		repositoryPath string
+		updateRepoID   string
+		updateBranch   string
 	)
 
 	BeforeAll(func() {
@@ -39,23 +44,33 @@ var _ = Describe("GitOps Declarative API", Label("api", "declarative", "gitops")
 
 	AfterAll(func() {
 		if repositoryID == "" {
-			return
-		}
-		resp, err := doRequest(http.MethodDelete, "/git-repositories/"+url.PathEscape(repositoryID), "")
-		if err != nil {
-			GinkgoWriter.Printf("Warning: GitRepository cleanup failed: %v\n", err)
-			return
-		}
-		_ = resp.Body.Close()
-		Eventually(func() int {
-			check, err := doRequest(http.MethodGet, "/git-repositories/"+url.PathEscape(repositoryID), "")
-			if err != nil {
-				return 0
+			if updateRepoID == "" {
+				return
 			}
-			defer check.Body.Close()
-			return check.StatusCode
-		}).WithTimeout(cleanupTimeout).WithPolling(2*time.Second).Should(Equal(http.StatusNotFound),
-			"GitRepository %s must be removed", repositoryID)
+		}
+		for _, id := range []string{repositoryID, updateRepoID} {
+			if id == "" {
+				continue
+			}
+			resp, err := doRequest(http.MethodDelete, "/git-repositories/"+url.PathEscape(id), "")
+			if err != nil {
+				GinkgoWriter.Printf("Warning: GitRepository cleanup failed: %v\n", err)
+				continue
+			}
+			_ = resp.Body.Close()
+			Eventually(func() int {
+				check, err := doRequest(http.MethodGet, "/git-repositories/"+url.PathEscape(id), "")
+				if err != nil {
+					return 0
+				}
+				defer check.Body.Close()
+				return check.StatusCode
+			}).WithTimeout(cleanupTimeout).WithPolling(2*time.Second).Should(Equal(http.StatusNotFound),
+				"GitRepository %s must be removed", id)
+		}
+		if updateBranch != "" {
+			deleteGitHubBranch(repositoryURL, updateBranch)
+		}
 	})
 
 	It("registers a public repository and preserves its configuration", func() {
@@ -97,6 +112,49 @@ var _ = Describe("GitOps Declarative API", Label("api", "declarative", "gitops")
 		Expect(gitRepositoryCommit(synced)).NotTo(BeEmpty(),
 			"synchronized repository must expose the commit it consumed")
 	})
+
+	It("observes a changed fixture commit on a disposable branch", func() {
+		githubToken := strings.TrimSpace(os.Getenv("GITHUB_TOKEN"))
+		if githubToken == "" {
+			Skip("set GITHUB_TOKEN to run the opt-in GitOps update-reconciliation test")
+		}
+
+		owner, repo := githubRepository(repositoryURL)
+		updateBranch = gitOpsUpdateBranch()
+		baseSHA := githubBranchSHA(owner, repo, repositoryRef, githubToken)
+		createGitHubBranch(owner, repo, updateBranch, baseSHA, githubToken)
+
+		file := githubFile(owner, repo, "catalog-item-instance.yaml", repositoryRef, githubToken)
+		updatedContent := strings.Replace(string(file.Decoded), "nginx:alpine", "nginx:stable-alpine", 1)
+		Expect(updatedContent).NotTo(Equal(string(file.Decoded)), "fixture must contain the expected baseline image")
+
+		updateRepoID = uniqueName("e2e-gitops-update-repository")
+		payload := gitRepositoryPayload(updateRepoID, repositoryURL, updateBranch, repositoryPath)
+		resp, err := doRequest(http.MethodPost,
+			"/git-repositories?id="+url.QueryEscape(updateRepoID), payload)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resp.StatusCode).To(Equal(http.StatusCreated))
+		_ = resp.Body.Close()
+
+		var initial map[string]interface{}
+		Eventually(func() string {
+			initial = getGitRepository(updateRepoID)
+			return gitRepositoryState(initial)
+		}).WithTimeout(10 * time.Minute).WithPolling(15 * time.Second).Should(Equal("synced"))
+		initialCommit := gitRepositoryCommit(initial)
+		Expect(initialCommit).NotTo(BeEmpty())
+
+		updateGitHubFile(owner, repo, "catalog-item-instance.yaml", updateBranch, file.SHA, updatedContent, githubToken)
+
+		var updated map[string]interface{}
+		Eventually(func() bool {
+			updated = getGitRepository(updateRepoID)
+			return strings.EqualFold(gitRepositoryState(updated), "synced") &&
+				gitRepositoryCommit(updated) != "" &&
+				gitRepositoryCommit(updated) != initialCommit
+		}).WithTimeout(10*time.Minute).WithPolling(15*time.Second).Should(BeTrue(),
+			"GitOps must observe the new commit on the disposable branch")
+	})
 })
 
 func requireGitOpsReconciler() {
@@ -118,6 +176,37 @@ func envOrDefault(name, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func gitOpsUpdateBranch() string {
+	buildIdentifier := strings.TrimSpace(os.Getenv("BUILD_TAG"))
+	if buildIdentifier == "" {
+		buildIdentifier = strings.TrimSpace(os.Getenv("BUILD_NUMBER"))
+	}
+	if buildIdentifier == "" {
+		return uniqueName("e2e-gitops-update")
+	}
+
+	var sanitized strings.Builder
+	previousDash := false
+	for _, character := range buildIdentifier {
+		valid := character >= 'a' && character <= 'z' ||
+			character >= 'A' && character <= 'Z' ||
+			character >= '0' && character <= '9' || character == '_' || character == '-'
+		if valid {
+			sanitized.WriteRune(character)
+			previousDash = false
+		} else if !previousDash {
+			sanitized.WriteByte('-')
+			previousDash = true
+		}
+	}
+
+	identifier := strings.Trim(sanitized.String(), "-_")
+	if identifier == "" {
+		return uniqueName("e2e-gitops-update")
+	}
+	return uniqueName("e2e-gitops-update-" + identifier)
 }
 
 func gitRepositoryPayload(displayName, repositoryURL, repositoryRef, repositoryPath string) string {
@@ -185,4 +274,100 @@ func nestedString(body map[string]interface{}, path ...string) string {
 	}
 	value, _ := current.(string)
 	return value
+}
+
+type githubFileResponse struct {
+	Content  string `json:"content"`
+	Encoding string `json:"encoding"`
+	SHA      string `json:"sha"`
+	Decoded  []byte `json:"-"`
+}
+
+func githubRepository(repositoryURL string) (string, string) {
+	parsed, err := url.Parse(repositoryURL)
+	Expect(err).NotTo(HaveOccurred())
+	parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	Expect(parts).To(HaveLen(2), "GitHub repository URL must have /owner/repository path")
+	return parts[0], strings.TrimSuffix(parts[1], ".git")
+}
+
+func githubRequest(method, endpoint, token string, payload interface{}) map[string]interface{} {
+	var body io.Reader
+	if payload != nil {
+		data, err := json.Marshal(payload)
+		Expect(err).NotTo(HaveOccurred())
+		body = strings.NewReader(string(data))
+	}
+	request, err := http.NewRequest(method, "https://api.github.com"+endpoint, body)
+	Expect(err).NotTo(HaveOccurred())
+	request.Header.Set("Accept", "application/vnd.github+json")
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	if payload != nil {
+		request.Header.Set("Content-Type", "application/json")
+	}
+	response, err := http.DefaultClient.Do(request)
+	Expect(err).NotTo(HaveOccurred())
+	defer response.Body.Close()
+	data, err := io.ReadAll(response.Body)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(response.StatusCode).To(BeNumerically("<", 300),
+		"GitHub API %s %s returned %d: %s", method, endpoint, response.StatusCode, string(data))
+	if len(data) == 0 {
+		return map[string]interface{}{}
+	}
+	var result map[string]interface{}
+	Expect(json.Unmarshal(data, &result)).To(Succeed())
+	return result
+}
+
+func githubBranchSHA(owner, repo, branch, token string) string {
+	response := githubRequest(http.MethodGet,
+		fmt.Sprintf("/repos/%s/%s/git/ref/heads/%s", owner, repo, url.PathEscape(branch)), token, nil)
+	object, ok := response["object"].(map[string]interface{})
+	Expect(ok).To(BeTrue())
+	sha, _ := object["sha"].(string)
+	Expect(sha).NotTo(BeEmpty())
+	return sha
+}
+
+func createGitHubBranch(owner, repo, branch, sha, token string) {
+	githubRequest(http.MethodPost, fmt.Sprintf("/repos/%s/%s/git/refs", owner, repo), token, map[string]string{
+		"ref": "refs/heads/" + branch,
+		"sha": sha,
+	})
+}
+
+func githubFile(owner, repo, path, branch, token string) githubFileResponse {
+	response := githubRequest(http.MethodGet,
+		fmt.Sprintf("/repos/%s/%s/contents/%s?ref=%s", owner, repo, path, url.QueryEscape(branch)), token, nil)
+	data, err := json.Marshal(response)
+	Expect(err).NotTo(HaveOccurred())
+	var file githubFileResponse
+	Expect(json.Unmarshal(data, &file)).To(Succeed())
+	Expect(file.Encoding).To(Equal("base64"))
+	decoded, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(file.Content, "\n", ""))
+	Expect(err).NotTo(HaveOccurred())
+	file.Decoded = decoded
+	return file
+}
+
+func updateGitHubFile(owner, repo, path, branch, sha, content, token string) {
+	githubRequest(http.MethodPut,
+		fmt.Sprintf("/repos/%s/%s/contents/%s", owner, repo, path), token, map[string]string{
+			"message": "test: update GitOps fixture",
+			"content": base64.StdEncoding.EncodeToString([]byte(content)),
+			"branch":  branch,
+			"sha":     sha,
+		})
+}
+
+func deleteGitHubBranch(repositoryURL, branch string) {
+	token := strings.TrimSpace(os.Getenv("GITHUB_TOKEN"))
+	if token == "" {
+		return
+	}
+	owner, repo := githubRepository(repositoryURL)
+	githubRequest(http.MethodDelete,
+		fmt.Sprintf("/repos/%s/%s/git/refs/heads/%s", owner, repo, url.PathEscape(branch)), token, nil)
 }

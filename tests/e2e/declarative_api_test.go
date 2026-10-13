@@ -20,19 +20,20 @@ import (
 // container provider.
 var _ = Describe("Declarative API", Label("api", "declarative"), Ordered, func() {
 	var (
-		catalogItemID string
-		policyID      string
-		createdPolicy bool
-		instanceIDs   []string
+		catalogItemID      string
+		containerAgentName string
+		policyID           string
+		createdPolicy      bool
+		instanceIDs        []string
 	)
 
 	BeforeAll(func() {
 		requireContainerSP()
 
-		agentName := discoverAgentByServiceType("container", "")
-		policyID = findGlobalPolicySelectingAgent(agentName)
+		containerAgentName = discoverAgentByServiceType("container", "")
+		policyID = findGlobalPolicySelectingAgent(containerAgentName)
 		if policyID == "" {
-			policyID, createdPolicy = createEmbeddedRoutingPolicy("container", agentName)
+			policyID, createdPolicy = createEmbeddedRoutingPolicy("container", containerAgentName)
 		}
 		Expect(policyID).NotTo(BeEmpty(), "a container placement policy is required")
 
@@ -81,6 +82,8 @@ var _ = Describe("Declarative API", Label("api", "declarative"), Ordered, func()
 		frontend := waitForDeclarativeSTI(frontendName, instanceStatusRunning)
 		Expect(stiStatus(backend)).To(Equal(instanceStatusRunning))
 		Expect(stiStatus(frontend)).To(Equal(instanceStatusRunning))
+		Expect(stringField(backend, "agent_name")).To(Equal(containerAgentName))
+		Expect(stringField(frontend, "agent_name")).To(Equal(containerAgentName))
 
 		getResp, err := doRequest(http.MethodGet, "/catalog-item-instances/"+instanceID, "")
 		Expect(err).NotTo(HaveOccurred())
@@ -88,6 +91,15 @@ var _ = Describe("Declarative API", Label("api", "declarative"), Ordered, func()
 		var got map[string]interface{}
 		decodeJSON(getResp, &got)
 		Expect(got["uid"]).To(Equal(instanceID))
+		assertDeclarativeSelectors(got, backendName, frontendName)
+
+		listResp, err := doRequest(http.MethodGet, "/catalog-item-instances?max_page_size=100", "")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(listResp.StatusCode).To(Equal(http.StatusOK))
+		var listBody map[string]interface{}
+		decodeJSON(listResp, &listBody)
+		Expect(findCatalogInstance(listBody, instanceID)).ToNot(BeNil(),
+			"catalog item instance list must contain the created instance")
 	})
 
 	It("rejects an unknown resource selector without creating a resource", func() {
@@ -108,6 +120,44 @@ var _ = Describe("Declarative API", Label("api", "declarative"), Ordered, func()
 			return len(newServiceTypeInstanceIDs(before))
 		}).WithTimeout(5*time.Second).WithPolling(1*time.Second).Should(Equal(0),
 			"invalid selector must not create a child service-type instance")
+	})
+
+	It("rejects unknown field paths and missing catalog item IDs", func() {
+		cases := []struct {
+			name       string
+			payload    string
+			expectText string
+		}{
+			{
+				name: "unknown field path",
+				payload: declarativeInstancePayload(uniqueName("e2e-decl-bad-field"), []map[string]interface{}{
+					{"resource": "backend", "path": "does.not.exist", "value": "invalid"},
+				}),
+				expectText: "does.not.exist",
+			},
+			{
+				name: "missing catalog item ID",
+				payload: declarativeInstancePayloadWithCatalogItem(uniqueName("e2e-decl-no-catalog"),
+					"", []map[string]interface{}{
+						{"resource": "backend", "path": "metadata.name", "value": "invalid"},
+					}),
+				expectText: "catalog_item_id",
+			},
+		}
+
+		for _, tc := range cases {
+			By(tc.name)
+			before := listServiceTypeInstanceIDs()
+			resp, err := doRequest(http.MethodPost, "/catalog-item-instances", tc.payload)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(resp.StatusCode).To(Equal(http.StatusBadRequest))
+			problem := string(readBody(resp))
+			Expect(problem).To(ContainSubstring(tc.expectText))
+			Consistently(func() int {
+				return len(newServiceTypeInstanceIDs(before))
+			}).WithTimeout(5*time.Second).WithPolling(1*time.Second).Should(Equal(0),
+				"%s must not create a child service-type instance", tc.name)
+		}
 	})
 
 	It("provisions dependencies in order and cleans up all child resources", func() {
@@ -243,6 +293,10 @@ func createDeclarativeInstance(backendName, frontendName string) (string, map[st
 		{"resource": "backend", "path": "metadata.name", "value": backendName},
 		{"resource": "frontend", "path": "metadata.name", "value": frontendName},
 	})
+	return createDeclarativeInstanceFromPayload(payload)
+}
+
+func createDeclarativeInstanceFromPayload(payload string) (string, map[string]interface{}) {
 	payloadMap := map[string]interface{}{}
 	Expect(json.Unmarshal([]byte(payload), &payloadMap)).To(Succeed())
 	spec := payloadMap["spec"].(map[string]interface{})
@@ -262,11 +316,15 @@ func createDeclarativeInstance(backendName, frontendName string) (string, map[st
 var currentDeclarativeCatalogItemID string
 
 func declarativeInstancePayload(displayName string, values []map[string]interface{}) string {
+	return declarativeInstancePayloadWithCatalogItem(displayName, currentDeclarativeCatalogItemID, values)
+}
+
+func declarativeInstancePayloadWithCatalogItem(displayName, catalogID string, values []map[string]interface{}) string {
 	payload := map[string]interface{}{
 		"api_version":  "v1alpha1",
 		"display_name": displayName,
 		"spec": map[string]interface{}{
-			"catalog_item_id": currentDeclarativeCatalogItemID,
+			"catalog_item_id": catalogID,
 			"user_values":     values,
 		},
 	}
@@ -323,6 +381,41 @@ func declarativeSTIsByName() map[string]map[string]interface{} {
 		}
 	}
 	return result
+}
+
+func assertDeclarativeSelectors(body map[string]interface{}, backendName, frontendName string) {
+	spec, ok := body["spec"].(map[string]interface{})
+	Expect(ok).To(BeTrue(), "instance response must contain spec")
+	values, ok := spec["user_values"].([]interface{})
+	Expect(ok).To(BeTrue(), "instance response must preserve user_values")
+	Expect(values).To(HaveLen(2))
+	selectors := map[string]string{}
+	for _, raw := range values {
+		value, ok := raw.(map[string]interface{})
+		Expect(ok).To(BeTrue(), "each user value must be an object")
+		Expect(value["path"]).To(Equal("metadata.name"))
+		selectors[stringField(value, "resource")] = stringField(value, "value")
+	}
+	Expect(selectors).To(Equal(map[string]string{
+		"backend":  backendName,
+		"frontend": frontendName,
+	}))
+}
+
+func findCatalogInstance(body map[string]interface{}, id string) map[string]interface{} {
+	var items []interface{}
+	if results, ok := body["results"].([]interface{}); ok {
+		items = results
+	} else {
+		items, _ = body["instances"].([]interface{})
+	}
+	for _, raw := range items {
+		item, ok := raw.(map[string]interface{})
+		if ok && stringField(item, "uid") == id {
+			return item
+		}
+	}
+	return nil
 }
 
 func newServiceTypeInstanceIDs(before map[string]struct{}) []string {

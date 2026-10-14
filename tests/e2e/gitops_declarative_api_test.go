@@ -32,11 +32,13 @@ var _ = Describe("GitOps Declarative API", Label("api", "declarative", "gitops")
 		updateBranch       string
 		catalogItemID      = "dcm-gitops-two-tier-web"
 		catalogItemCreated bool
+		policyID           string
 	)
 
 	BeforeAll(func() {
 		requireGitOpsReconciler()
 		catalogItemCreated = ensureGitOpsCatalogItem(catalogItemID)
+		policyID = createGitOpsRoutingPolicy()
 
 		resp, err := doRequest(http.MethodGet, "/git-repositories", "")
 		Expect(err).NotTo(HaveOccurred())
@@ -46,7 +48,7 @@ var _ = Describe("GitOps Declarative API", Label("api", "declarative", "gitops")
 	})
 
 	AfterAll(func() {
-		if repositoryID == "" && updateRepoID == "" && !catalogItemCreated {
+		if repositoryID == "" && updateRepoID == "" && policyID == "" && !catalogItemCreated {
 			return
 		}
 		for _, id := range []string{repositoryID, updateRepoID} {
@@ -71,6 +73,14 @@ var _ = Describe("GitOps Declarative API", Label("api", "declarative", "gitops")
 		}
 		if updateBranch != "" {
 			deleteGitHubBranch(repositoryURL, updateBranch)
+		}
+		if policyID != "" {
+			resp, err := doRequest(http.MethodDelete, "/policies/"+url.PathEscape(policyID), "")
+			if err != nil {
+				GinkgoWriter.Printf("Warning: policy cleanup failed: %v\n", err)
+			} else {
+				_ = resp.Body.Close()
+			}
 		}
 		if catalogItemCreated {
 			resp, err := doRequest(http.MethodDelete, "/catalog-items/"+url.PathEscape(catalogItemID), "")
@@ -215,6 +225,33 @@ func ensureGitOpsCatalogItem(id string) bool {
 	Expect(resp.StatusCode).To(Equal(http.StatusCreated))
 	_ = resp.Body.Close()
 	return true
+}
+
+func createGitOpsRoutingPolicy() string {
+	agentName := discoverAgentByServiceType("container", "")
+	Expect(agentName).NotTo(BeEmpty(), "embedded container agent must be discoverable")
+
+	packageName := fmt.Sprintf("e2e_gitops_%d", time.Now().UnixNano())
+	regoCode := fmt.Sprintf("package %s\n\nmain := {\"selected_agent\": \"%s\"}", packageName, agentName)
+	payloadBytes, err := json.Marshal(map[string]interface{}{
+		"display_name": uniqueName("e2e-gitops-policy"),
+		"policy_type":  "GLOBAL",
+		"priority":     100,
+		"enabled":      true,
+		"description":  "E2E GitOps route to embedded container agent",
+		"rego_code":    regoCode,
+	})
+	Expect(err).NotTo(HaveOccurred())
+
+	resp, err := doRequest(http.MethodPost, "/policies", string(payloadBytes))
+	Expect(err).NotTo(HaveOccurred())
+	Expect(resp.StatusCode).To(Equal(http.StatusCreated))
+
+	var body map[string]interface{}
+	decodeJSON(resp, &body)
+	policyID := stringField(body, "id")
+	Expect(policyID).NotTo(BeEmpty(), "GitOps routing policy must return an ID")
+	return policyID
 }
 
 func gitOpsCatalogFields(defaultName, image string) string {

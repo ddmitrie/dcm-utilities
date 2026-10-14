@@ -220,6 +220,7 @@ func ensureGitOpsCatalogItem(id string) bool {
 func gitOpsCatalogFields(defaultName, image string) string {
 	return fmt.Sprintf(`[
 		{"path":"metadata.name","display_name":"Name","editable":true,"default":%q},
+		{"path":"metadata.labels","display_name":"Labels","editable":true,"default":{}},
 		{"path":"image.reference","display_name":"Image","editable":true,"default":%q},
 		{"path":"resources.cpu.min","editable":false,"default":"1"},
 		{"path":"resources.cpu.max","editable":false,"default":"1"},

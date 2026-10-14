@@ -251,6 +251,16 @@ func createGitOpsRoutingPolicy() string {
 	decodeJSON(resp, &body)
 	policyID := stringField(body, "id")
 	Expect(policyID).NotTo(BeEmpty(), "GitOps routing policy must return an ID")
+
+	getResp, err := doRequest(http.MethodGet, "/policies/"+url.PathEscape(policyID), "")
+	Expect(err).NotTo(HaveOccurred())
+	Expect(getResp.StatusCode).To(Equal(http.StatusOK))
+	var stored map[string]interface{}
+	decodeJSON(getResp, &stored)
+	Expect(stringField(stored, "rego_code")).To(Equal(regoCode),
+		"GitOps routing policy must preserve the Rego source used for evaluation")
+	Expect(stringField(stored, "rego_code")).To(ContainSubstring(agentName),
+		"GitOps routing policy must contain the selected agent")
 	return policyID
 }
 

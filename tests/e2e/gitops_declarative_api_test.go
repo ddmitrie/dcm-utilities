@@ -232,13 +232,7 @@ func createGitOpsRoutingPolicy() string {
 	Expect(agentName).NotTo(BeEmpty(), "embedded container agent must be discoverable")
 
 	packageName := fmt.Sprintf("e2e_gitops_%d", time.Now().UnixNano())
-	regoCode := fmt.Sprintf(`package %s
-
-import rego.v1
-
-main := {"selected_agent": %q} if {
-	true
-}`, packageName, agentName)
+	regoCode := fmt.Sprintf("package %s\n\nmain = {\"selected_agent\": %q}", packageName, agentName)
 	payloadBytes, err := json.Marshal(map[string]interface{}{
 		"display_name": uniqueName("e2e-gitops-policy"),
 		"policy_type":  "GLOBAL",

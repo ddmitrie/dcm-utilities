@@ -237,7 +237,7 @@ func createGitOpsRoutingPolicy() string {
 import rego.v1
 
 main := {"selected_agent": %q} if {
-	input.spec.service_type == "container"
+	true
 }`, packageName, agentName)
 	payloadBytes, err := json.Marshal(map[string]interface{}{
 		"display_name": uniqueName("e2e-gitops-policy"),

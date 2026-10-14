@@ -24,16 +24,19 @@ import (
 // target deployment.
 var _ = Describe("GitOps Declarative API", Label("api", "declarative", "gitops"), Ordered, func() {
 	var (
-		repositoryID   string
-		repositoryURL  string
-		repositoryRef  string
-		repositoryPath string
-		updateRepoID   string
-		updateBranch   string
+		repositoryID       string
+		repositoryURL      string
+		repositoryRef      string
+		repositoryPath     string
+		updateRepoID       string
+		updateBranch       string
+		catalogItemID      = "dcm-gitops-two-tier-web"
+		catalogItemCreated bool
 	)
 
 	BeforeAll(func() {
 		requireGitOpsReconciler()
+		catalogItemCreated = ensureGitOpsCatalogItem(catalogItemID)
 
 		resp, err := doRequest(http.MethodGet, "/git-repositories", "")
 		Expect(err).NotTo(HaveOccurred())
@@ -43,10 +46,8 @@ var _ = Describe("GitOps Declarative API", Label("api", "declarative", "gitops")
 	})
 
 	AfterAll(func() {
-		if repositoryID == "" {
-			if updateRepoID == "" {
-				return
-			}
+		if repositoryID == "" && updateRepoID == "" && !catalogItemCreated {
+			return
 		}
 		for _, id := range []string{repositoryID, updateRepoID} {
 			if id == "" {
@@ -70,6 +71,23 @@ var _ = Describe("GitOps Declarative API", Label("api", "declarative", "gitops")
 		}
 		if updateBranch != "" {
 			deleteGitHubBranch(repositoryURL, updateBranch)
+		}
+		if catalogItemCreated {
+			resp, err := doRequest(http.MethodDelete, "/catalog-items/"+url.PathEscape(catalogItemID), "")
+			if err != nil {
+				GinkgoWriter.Printf("Warning: catalog item cleanup failed: %v\n", err)
+				return
+			}
+			_ = resp.Body.Close()
+			Eventually(func() int {
+				check, err := doRequest(http.MethodGet, "/catalog-items/"+url.PathEscape(catalogItemID), "")
+				if err != nil {
+					return 0
+				}
+				defer check.Body.Close()
+				return check.StatusCode
+			}).WithTimeout(cleanupTimeout).WithPolling(2*time.Second).Should(Equal(http.StatusNotFound),
+				"catalog item %s must be removed", catalogItemID)
 		}
 	})
 
@@ -156,6 +174,59 @@ var _ = Describe("GitOps Declarative API", Label("api", "declarative", "gitops")
 			"GitOps must observe the new commit on the disposable branch")
 	})
 })
+
+func ensureGitOpsCatalogItem(id string) bool {
+	resp, err := doRequest(http.MethodGet, "/catalog-items/"+url.PathEscape(id), "")
+	Expect(err).NotTo(HaveOccurred())
+	if resp.StatusCode == http.StatusOK {
+		_ = resp.Body.Close()
+		return false
+	}
+	_ = resp.Body.Close()
+	Expect(resp.StatusCode).To(Equal(http.StatusNotFound), "catalog item %s must be absent or valid", id)
+
+	payload := fmt.Sprintf(`{
+		"api_version": "v1alpha1",
+		"display_name": %q,
+		"spec": {
+			"resources": [
+				{
+					"name": "backend",
+					"service_type": "container",
+					"fields": %s
+				},
+				{
+					"name": "frontend",
+					"service_type": "container",
+					"requires_resources": ["backend"],
+					"fields": %s
+				}
+			]
+		}
+	}`, id, gitOpsCatalogFields("dcm-gitops-backend", "docker.io/library/nginx:alpine"),
+		gitOpsCatalogFields("dcm-gitops-frontend", "docker.io/library/httpd:alpine"))
+
+	resp, err = doRequest(http.MethodPost, "/catalog-items?id="+url.QueryEscape(id), payload)
+	Expect(err).NotTo(HaveOccurred())
+	if resp.StatusCode == http.StatusConflict {
+		_ = resp.Body.Close()
+		return false
+	}
+	Expect(resp.StatusCode).To(Equal(http.StatusCreated))
+	_ = resp.Body.Close()
+	return true
+}
+
+func gitOpsCatalogFields(defaultName, image string) string {
+	return fmt.Sprintf(`[
+		{"path":"metadata.name","display_name":"Name","editable":true,"default":%q},
+		{"path":"image.reference","display_name":"Image","editable":true,"default":%q},
+		{"path":"resources.cpu.min","editable":false,"default":"1"},
+		{"path":"resources.cpu.max","editable":false,"default":"1"},
+		{"path":"resources.memory.min","editable":false,"default":"128MB"},
+		{"path":"resources.memory.max","editable":false,"default":"256MB"}
+	]`, defaultName, image)
+}
 
 func requireGitOpsReconciler() {
 	if strings.EqualFold(os.Getenv("GITOPS_TEST_ENABLED"), "true") {

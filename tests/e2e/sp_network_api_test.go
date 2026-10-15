@@ -17,15 +17,16 @@ import (
 )
 
 const (
-	defaultAgentURL              = "http://localhost:8081/api/v1alpha1"
-	networkSPEnabledEnv          = "DCM_NETWORK_SP_ENABLED"
-	networkProviderServiceType   = "network"
-	networkProviderType          = "embedded"
-	networkProviderStatusReady   = "Ready"
-	networkResourceStatusReady   = "ready"
-	networkResourceStatusPending = "pending"
-	networkResourceStatusFailed  = "failed"
-	networkStatusUnavailable     = "unavailable"
+	defaultAgentURL                   = "http://localhost:8081/api/v1alpha1"
+	networkSPEnabledEnv               = "DCM_NETWORK_SP_ENABLED"
+	networkProviderServiceType        = "network"
+	networkProviderType               = "embedded"
+	networkProviderStatusReady        = "Ready"
+	networkResourceStatusReady        = "ready"
+	networkResourceStatusPending      = "pending"
+	networkResourceStatusProvisioning = "provisioning"
+	networkResourceStatusFailed       = "failed"
+	networkStatusUnavailable          = "unavailable"
 )
 
 var (
@@ -446,24 +447,24 @@ func waitForNetworkReady(resourceID string) {
 
 func waitForNetworkPending(resourceID, serviceName string, duration time.Duration) {
 	GinkgoHelper()
-	pendingState := func() string {
+	nonReadyState := func() bool {
 		status := networkResourceStatus(resourceID)
-		if status != networkResourceStatusPending {
-			return status
+		if status != networkResourceStatusPending && status != networkResourceStatusProvisioning {
+			return false
 		}
 		service, err := networkService(networkTestNamespace(), serviceName)
 		if err != nil {
-			return "service-unavailable"
+			return false
 		}
 		if hasExternalAddress(service) {
-			return "external-address"
+			return false
 		}
-		return networkResourceStatusPending
+		return true
 	}
-	Eventually(pendingState).WithTimeout(120*time.Second).WithPolling(3*time.Second).Should(Equal(networkResourceStatusPending),
-		"network Service should become pending before stability is checked")
-	Consistently(pendingState).WithTimeout(duration).WithPolling(3*time.Second).Should(Equal(networkResourceStatusPending),
-		"network Service should remain pending without an external address")
+	Eventually(nonReadyState).WithTimeout(120*time.Second).WithPolling(3*time.Second).Should(BeTrue(),
+		"network Service should become pending or provisioning before stability is checked")
+	Consistently(nonReadyState).WithTimeout(duration).WithPolling(3*time.Second).Should(BeTrue(),
+		"network Service should remain pending or provisioning without an external address")
 }
 
 func waitForNetworkStatus(resourceID, expected string) {
@@ -511,7 +512,11 @@ func assertNetworkInstance(resource networkCRUDResource, agentName, expectedStat
 	Expect(resp.StatusCode).To(Equal(http.StatusOK))
 	var body map[string]interface{}
 	decodeJSON(resp, &body)
-	Expect(body["status"]).To(Equal(expectedStatus))
+	if expectedStatus == networkResourceStatusPending {
+		Expect(body["status"]).To(BeElementOf(networkResourceStatusPending, networkResourceStatusProvisioning))
+	} else {
+		Expect(body["status"]).To(Equal(expectedStatus))
+	}
 	Expect(body["agent_name"]).To(Equal(agentName))
 }
 

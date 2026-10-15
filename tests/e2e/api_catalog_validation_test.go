@@ -96,7 +96,10 @@ var _ = Describe("Catalog field-path validation", Label("catalog", "validation",
 		}
 		patch, err := json.Marshal(invalid)
 		Expect(err).NotTo(HaveOccurred())
-		update, err := doRequest(http.MethodPatch, "/catalog-items/"+uid, string(patch))
+		request, err := http.NewRequest(http.MethodPatch, gatewayBaseURL+"/catalog-items/"+uid, strings.NewReader(string(patch)))
+		Expect(err).NotTo(HaveOccurred())
+		request.Header.Set("Content-Type", "application/merge-patch+json")
+		update, err := httpClient.Do(request)
 		Expect(err).NotTo(HaveOccurred())
 		updateBody := responseBodyString(update)
 		Expect(update.StatusCode).To(Equal(http.StatusBadRequest))

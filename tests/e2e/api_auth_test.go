@@ -9,7 +9,7 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-var _ = Describe("DCM API authentication", Label("smoke", "auth"), func() {
+var _ = Describe("DCM API authentication", Label("smoke", "auth", "p0"), func() {
 	It("rejects an unauthenticated catalog request", func() {
 		if !authEnabled {
 			Skip("authentication is disabled")

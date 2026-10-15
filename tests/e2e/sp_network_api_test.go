@@ -55,7 +55,7 @@ type networkCRUDResource struct {
 	NodePort      int
 }
 
-var _ = Describe("Network SP API", Label("sp", "network"), func() {
+var _ = Describe("Network SP API", Label("sp", "network", "p0"), func() {
 	var networkAgentName string
 
 	Context("Phase A wiring", Label("lab-default"), Ordered, func() {

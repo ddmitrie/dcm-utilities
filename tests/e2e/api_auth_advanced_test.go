@@ -245,7 +245,7 @@ func waitForKeycloakAdmin(admin *keycloakAdminClient) {
 		"RHBK Admin API and client endpoint should become available")
 }
 
-var _ = Describe("DCM authentication E2E", Ordered, ContinueOnFailure, Label("auth"), func() {
+var _ = Describe("DCM authentication E2E", Ordered, ContinueOnFailure, Label("auth", "p0"), func() {
 	BeforeAll(func() {
 		requireAuthTest()
 	})
